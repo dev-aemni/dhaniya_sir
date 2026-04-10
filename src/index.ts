@@ -298,6 +298,27 @@ const slashCommands = [
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
   new SlashCommandBuilder()
+    .setName('purge')
+    .setDescription('Delete multiple messages with advanced filters.')
+    .addIntegerOption(opt => 
+      opt.setName('amount').setDescription('Number of messages to scan (1-100)').setRequired(true).setMinValue(1).setMaxValue(100)
+    )
+    .addUserOption(opt => opt.setName('user').setDescription('Filter by specific user').setRequired(false))
+    .addChannelOption(opt => 
+      opt.setName('channel').setDescription('Target channel (default: current channel)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false)
+    )
+    .addStringOption(opt => 
+      opt.setName('filter').setDescription('Special message filters').addChoices(
+        { name: 'Bots only', value: 'bot' },
+        { name: 'Humans only', value: 'human' },
+        { name: 'Contains Links', value: 'link' },
+        { name: 'Contains Invites', value: 'invite' }
+      ).setRequired(false)
+    )
+    .addStringOption(opt => opt.setName('contain').setDescription('Filter messages containing a specific word/phrase').setRequired(false))
+    .addStringOption(opt => opt.setName('regex').setDescription('Filter messages by Regular Expression').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+  new SlashCommandBuilder()
     .setName('delete')
     .setDescription('Fun fake command')
     .addSubcommand(sub =>
@@ -681,13 +702,14 @@ function buildHelpText(prefixValue: string = DEFAULT_PREFIXES[0]): string {
     `${prefixValue}tags`,
     '',
     'Moderation:',
+    `${prefixValue}purge <1-100> [@user] [bot|human|link|invite] [contain text] [regex pattern]`,
     `${prefixValue}kick @user [reason]`,
     `${prefixValue}ban @user [reason]`,
     `${prefixValue}mute/@timeout @user <10min/30sec/2hour/1day/1week/1mon/1y> [reason]`,
     `${prefixValue}unmute/@untimeout @user [reason]`,
     '',
     'Slash:',
-    '/uptime /botinfo /choose /roll /coinflip /8ball /reverse /calc /giveaway /role /prefix /avatar /userinfo /serverinfo /delete server /alias /aliasdel /aliases /tag /tagscript /say /embed /kick /ban /mute /timeout /unmute /untimeout'
+    '/uptime /botinfo /choose /roll /coinflip /8ball /reverse /calc /giveaway /role /prefix /avatar /userinfo /serverinfo /delete server /alias /aliasdel /aliases /tag /tagscript /say /embed /purge /kick /ban /mute /timeout /unmute /untimeout'
   ].join('\n');
 }
 
@@ -699,6 +721,47 @@ async function sendToChannel(
     return (channel as { send: (content: typeof payload) => Promise<unknown> }).send(payload);
   }
   return null;
+}
+
+async function executePurge(
+  channel: any,
+  amount: number,
+  filters: {
+    userId?: string;
+    isBot?: boolean;
+    isHuman?: boolean;
+    hasLink?: boolean;
+    hasInvite?: boolean;
+    contain?: string;
+    regex?: RegExp;
+  }
+): Promise<{ deleted: number; error?: string }> {
+  if (!('messages' in channel)) return { deleted: 0, error: 'Cannot purge in this channel type.' };
+  
+  try {
+    const fetched = await channel.messages.fetch({ limit: amount });
+    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+
+    const toDelete = fetched.filter((msg: Message) => {
+      if (msg.createdTimestamp < fourteenDaysAgo) return false; // Discord limitation
+      if (filters.userId && msg.author.id !== filters.userId) return false;
+      if (filters.isBot && !msg.author.bot) return false;
+      if (filters.isHuman && msg.author.bot) return false;
+      if (filters.hasLink && !/(https?:\/\/[^\s]+)/.test(msg.content)) return false;
+      if (filters.hasInvite && !/(discord\.gg\/|discord\.com\/invite\/)/i.test(msg.content)) return false;
+      if (filters.contain && !msg.content.toLowerCase().includes(filters.contain.toLowerCase())) return false;
+      if (filters.regex && !filters.regex.test(msg.content)) return false;
+      return true;
+    });
+
+    if (toDelete.size === 0) return { deleted: 0 };
+    
+    const deletedMessages = await channel.bulkDelete(toDelete, true);
+    return { deleted: deletedMessages.size };
+  } catch (err) {
+    console.error('Purge error:', err);
+    return { deleted: 0, error: 'Failed to delete messages. Make sure they are not older than 14 days and I have Manage Messages permission.' };
+  }
 }
 
 async function runModerationAction(params: {
@@ -1231,6 +1294,43 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
         `Created: **${interaction.guild.createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} (IST)**`
       ].join('\n')
     );
+    return;
+  }
+
+  if (name === 'purge') {
+    const amount = interaction.options.getInteger('amount', true);
+    const user = interaction.options.getUser('user');
+    const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
+    const filterType = interaction.options.getString('filter');
+    const contain = interaction.options.getString('contain') || undefined;
+    const regexStr = interaction.options.getString('regex');
+
+    let regexPattern: RegExp | undefined;
+    if (regexStr) {
+      try { 
+        regexPattern = new RegExp(regexStr); 
+      } catch { 
+        return void interaction.reply({ content: 'Invalid Regex pattern provided.', ephemeral: true }); 
+      }
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const result = await executePurge(targetChannel, amount, {
+      userId: user?.id,
+      isBot: filterType === 'bot',
+      isHuman: filterType === 'human',
+      hasLink: filterType === 'link',
+      hasInvite: filterType === 'invite',
+      contain,
+      regex: regexPattern
+    });
+
+    if (result.error) {
+      await interaction.editReply(result.error);
+    } else {
+      await interaction.editReply(`Successfully deleted **${result.deleted}** message(s)${targetChannel.id !== interaction.channelId ? ` in <#${targetChannel.id}>` : ''}.`);
+    }
     return;
   }
 
@@ -1874,6 +1974,79 @@ client.on(Events.MessageCreate, async (message: Message) => {
     await message.reply(
       `Usage: ${activePrefix}prefix add <newprefix> | ${activePrefix}prefix remove | ${activePrefix}prefix list`
     );
+    return;
+  }
+
+  if (command === 'purge' || command === 'clear') {
+    if (!message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+      await message.reply('You need Manage Messages permission.');
+      return;
+    }
+
+    const amount = Number(parts[0]);
+    if (!Number.isInteger(amount) || amount < 1 || amount > 100) {
+      await message.reply(`Usage: \`${activePrefix}${command} <1-100> [user @mention] [bot|human|link|invite] [contain text] [regex pattern]\``);
+      return;
+    }
+
+    let targetChannel: any = message.channel;
+    let filterUser: string | undefined = undefined;
+    let isBot = false, isHuman = false, hasLink = false, hasInvite = false;
+    let containStr: string | undefined = undefined;
+    let regexPattern: RegExp | undefined = undefined;
+
+    let i = 1;
+    while (i < parts.length) {
+      const p = parts[i].toLowerCase();
+      if (p === 'bot') isBot = true;
+      else if (p === 'human') isHuman = true;
+      else if (p === 'link') hasLink = true;
+      else if (p === 'invite') hasInvite = true;
+      else if (p === 'user') {
+        i++;
+        const match = parts[i]?.match(/^<@!?(\d+)>$/);
+        if (match) filterUser = match[1];
+        else filterUser = parts[i]; 
+      }
+      else if (p === 'channel') {
+        i++;
+        const match = parts[i]?.match(/^<#(\d+)>$/);
+        if (match && message.guild) targetChannel = message.guild.channels.cache.get(match[1]) || message.channel;
+      }
+      else if (p === 'contain') {
+        containStr = parts.slice(i + 1).join(' ').replace(/^"|"$/g, '');
+        break; 
+      }
+      else if (p === 'regex') {
+        try { regexPattern = new RegExp(parts.slice(i + 1).join(' ').replace(/^"|"$/g, '')); } catch(e) {}
+        break;
+      }
+      else {
+         const match = parts[i].match(/^<@!?(\d+)>$/);
+         if (match) filterUser = match[1];
+      }
+      i++;
+    }
+
+    if (message.deletable) await message.delete().catch(() => null);
+
+    const result = await executePurge(targetChannel, amount, {
+      userId: filterUser,
+      isBot,
+      isHuman,
+      hasLink,
+      hasInvite,
+      contain: containStr,
+      regex: regexPattern
+    });
+
+    if (result.error) {
+      const replyMsg = await message.channel.send(result.error).catch(() => null);
+      if (replyMsg) setTimeout(() => replyMsg.delete().catch(() => null), 5000);
+    } else {
+      const replyMsg = await message.channel.send(`Successfully deleted **${result.deleted}** message(s)${targetChannel.id !== message.channelId ? ` in <#${targetChannel.id}>` : ''}.`).catch(() => null);
+      if (replyMsg) setTimeout(() => replyMsg.delete().catch(() => null), 5000);
+    }
     return;
   }
 
