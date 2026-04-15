@@ -921,4 +921,3 @@ client.on(Events.MessageCreate, async (m: Message) => {
 });
 
 client.login(TOKEN);
-// END OF FILE
