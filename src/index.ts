@@ -19,10 +19,10 @@ import {
   Routes,
   TextInputBuilder,
   TextInputStyle,
-  User
+  MessageFlags
 } from 'discord.js';
 
-// IMPORT OUR NEW FILE!
+// IMPORT SLASH COMMANDS
 import { slashCommands } from './commands';
 
 // --- ENVIRONMENT & CONSTANTS ---
@@ -128,7 +128,6 @@ const prefixes = loadPrefixStore(SETTINGS_FILE);
 const afks = loadAfkStore(AFK_FILE);
 const giveaways = new Map<string, GiveawayEntry>();
 
-// Global active embed builders storage
 const activeEmbedBuilders = new Map<string, { embed: EmbedBuilder, buttons: ButtonBuilder[], botMsg: Message, awaiting: string | null, editTarget?: Message }>();
 
 // --- CLIENT SETUP ---
@@ -151,8 +150,7 @@ function safeCalculate(expression: string): number | null {
   if (!trimmed || !/^[0-9+\-*/().\s]+$/.test(trimmed)) return null;
   try {
     const result = Function(`"use strict"; return (${trimmed});`)();
-    if (typeof result !== 'number' || !Number.isFinite(result)) return null;
-    return result;
+    return typeof result === 'number' && Number.isFinite(result) ? result : null;
   } catch { return null; }
 }
 
@@ -165,6 +163,78 @@ function getUptimeText(): string {
   return `${d}d ${h}h ${m}m ${s}s`;
 }
 
+// --- TAGSCRIPT PARSER ENGINE ---
+async function processTagScript(content: string, message: Message | ChatInputCommandInteraction, args: string[]) {
+  let text = content;
+  let shouldDelete = false;
+
+  const isMsg = message instanceof Message;
+  const user = isMsg ? message.author : message.user;
+  const member = message.member as GuildMember | null;
+  const guild = message.guild;
+  const channel = message.channel as any;
+
+  if (text.includes('{delete}')) {
+      shouldDelete = true;
+      text = text.replace(/\{delete\}/gi, '');
+  }
+
+  const map: Record<string, string> = {
+      '{user}': member?.nickname || user.username,
+      '{user.username}': user.username,
+      '{user.mention}': `<@${user.id}>`,
+      '{mention}': `<@${user.id}>`,
+      '{user.id}': user.id,
+      '{user.avatar}': user.displayAvatarURL(),
+      '{user.color}': member?.displayHexColor || '#000000',
+      '{server}': guild?.name || 'Unknown Server',
+      '{server.id}': guild?.id || 'Unknown ID',
+      '{server.memberCount}': guild?.memberCount?.toString() || '0',
+      '{channel}': channel?.name || 'Unknown Channel',
+      '{channel.id}': channel?.id || 'Unknown ID',
+      '{channel.mention}': channel?.id ? `<#${channel.id}>` : 'Unknown Channel',
+      '{args}': args.join(' '),
+      '{unix}': Math.floor(Date.now() / 1000).toString(),
+  };
+
+  let targetStr = map['{user}'];
+  if (args[0] && args[0].match(/^<@!?(\d+)>$/)) targetStr = args[0];
+  map['{target}'] = targetStr;
+
+  for (const [key, value] of Object.entries(map)) {
+      text = text.split(key).join(value);
+  }
+
+  text = text.replace(/\{(\d+)\}/g, (match, p1) => {
+      const index = parseInt(p1, 10) - 1;
+      return args[index] || '';
+  });
+
+  text = text.replace(/\{random:\s*([^}]+)\}/gi, (match, p1) => {
+      const options = p1.split(',').map((s: string) => s.trim());
+      return options[Math.floor(Math.random() * options.length)] || '';
+  });
+
+  text = text.replace(/\{if\((.*?)(==|!=|<|>|<=|>=)(.*?)\):(.*?)(?:\|(.*?))?\}/gi, (match, left, op, right, onTrue, onFalse) => {
+      left = left.trim(); right = right.trim();
+      let result = false;
+      const numLeft = parseFloat(left), numRight = parseFloat(right);
+      const isNum = !isNaN(numLeft) && !isNaN(numRight);
+
+      if (op === '==') result = left === right;
+      else if (op === '!=') result = left !== right;
+      else if (isNum && op === '<') result = numLeft < numRight;
+      else if (isNum && op === '>') result = numLeft > numRight;
+      else if (isNum && op === '<=') result = numLeft <= numRight;
+      else if (isNum && op === '>=') result = numLeft >= numRight;
+
+      return result ? onTrue : (onFalse || '');
+  });
+
+  return { text: text.trim(), shouldDelete };
+}
+
+// --- COMMAND REGISTRATION ---
 async function registerSlashCommands(preferredGuildId?: string): Promise<{ ok: boolean }> {
   if (!CLIENT_ID) return { ok: false };
   const rest = new REST({ version: '10' }).setToken(TOKEN as string);
@@ -180,11 +250,6 @@ async function registerSlashCommands(preferredGuildId?: string): Promise<{ ok: b
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: slashCommands });
     return { ok: true };
   } catch { return { ok: false }; }
-}
-
-function normalizeHex(color?: string): number | undefined {
-  if (!color) return undefined;
-  return Number.parseInt(color.trim().replace('#', ''), 16);
 }
 
 function parseDurationToken(token: string | undefined): { ok: true; ms: number; label: string } | { ok: false; error: 'invalid' | 'too_long' } {
@@ -205,7 +270,7 @@ function buildHelpText(prefixValue: string = DEFAULT_PREFIXES[0]): string {
 }
 
 async function sendToChannel(channel: any, payload: any): Promise<any | null> {
-  if (channel && typeof channel.send === 'function') return channel.send(payload);
+  if (channel && typeof channel.send === 'function') return channel.send(payload).catch(() => null);
   return null;
 }
 
@@ -234,6 +299,12 @@ function getEmbedUIRows(builder: { buttons: ButtonBuilder[] }) {
   return rows;
 }
 
+function normalizeHex(input: string): number | null {
+  const cleaned = input.trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(cleaned)) return null;
+  return parseInt(cleaned, 16);
+}
+
 async function startEmbedBuilder(ctx: Message | ChatInputCommandInteraction, editMsgId?: string) {
   const authorId = 'user' in ctx ? ctx.user.id : ctx.author.id;
   let targetMessage: Message | undefined;
@@ -241,7 +312,8 @@ async function startEmbedBuilder(ctx: Message | ChatInputCommandInteraction, edi
   if (editMsgId && ctx.channel && 'messages' in ctx.channel) {
     try { targetMessage = await (ctx.channel as any).messages.fetch(editMsgId); } 
     catch { 
-      if ('reply' in ctx && typeof ctx.reply === 'function') await ctx.reply(ctx instanceof ChatInputCommandInteraction ? { content: "Target message not found.", ephemeral: true } : "Target message not found.");
+      if (ctx instanceof ChatInputCommandInteraction) await ctx.reply({ content: "Target message not found.", flags: MessageFlags.Ephemeral });
+      else if ('reply' in ctx && typeof ctx.reply === 'function') await (ctx as Message).reply("Target message not found.");
       return;
     }
   }
@@ -259,7 +331,7 @@ async function startEmbedBuilder(ctx: Message | ChatInputCommandInteraction, edi
       });
   }
 
-  const content = "**DO THE UI LIKE THIS**\nUse the buttons below to add fields";
+  const content = "**Interactive Embed Builder**\nUse the buttons below to configure your embed:";
   const builderState = { embed, buttons: existingButtons, botMsg: null as any, awaiting: null, editTarget: targetMessage };
   
   let botMsg: Message;
@@ -329,13 +401,6 @@ function getGuildPrefixes(guildId?: string | null): string[] { return guildId &&
 function getPrimaryPrefix(guildId?: string | null): string { return getGuildPrefixes(guildId)[0]; }
 function resolveMatchedPrefix(guildId: string | null | undefined, content: string): string | null { return [...getGuildPrefixes(guildId)].sort((a, b) => b.length - a.length).find(p => content.startsWith(p)) || null; }
 
-function getAliasReply(guildId: string | null | undefined, input: string): string | null {
-  const key = input.trim().toLowerCase();
-  if (guildId && aliases[guildId] && aliases[guildId][key]) return aliases[guildId][key];
-  if (GLOBAL_ALIASES[key]) return GLOBAL_ALIASES[key];
-  return null;
-}
-
 // --- GIVEAWAY HELPERS ---
 function buildGiveawayEmbed(g: GiveawayEntry) {
   return new EmbedBuilder().setTitle(`Giveaway: ${g.title}`).setDescription('Click **Participate!** below to join.').setColor(g.ended ? 0x777777 : 0x00b894)
@@ -361,15 +426,16 @@ async function endGiveaway(id: string) {
 async function handleSlash(interaction: ChatInputCommandInteraction): Promise<void> {
   const name = interaction.commandName;
 
-  if (name === 'ping') return void interaction.reply(`Ping Pong Is **${client.ws.ping}ms~**`);
+  if (name === 'ping') return void interaction.reply({ content: `Ping Pong Is **${client.ws.ping}ms~**`, flags: MessageFlags.Ephemeral });
   if (name === 'uptime') return void interaction.reply(`Uptime: **${getUptimeText()}**`);
-  if (name === 'help') return void interaction.reply({ content: buildHelpText(getPrimaryPrefix(interaction.guildId)), ephemeral: true });
+  if (name === 'help') return void interaction.reply({ content: buildHelpText(getPrimaryPrefix(interaction.guildId)), flags: MessageFlags.Ephemeral });
   if (name === 'botinfo') return void interaction.reply([`Bot: **${client.user?.tag || 'Unknown'}**`, `ID: \`${client.user?.id || 'N/A'}\``, `Servers: **${client.guilds.cache.size}**`, `Uptime: **${getUptimeText()}**`].join('\n'));
-  
+  if (name === 'guildid') return void interaction.reply({ content: `Guild ID: ${interaction.guildId || 'N/A'}`, flags: MessageFlags.Ephemeral });
+
   if (name === 'afk') {
     const reason = interaction.options.getString('reason') || 'AFK';
     afks[interaction.user.id] = { reason, time: Date.now() }; saveStore(AFK_FILE, afks);
-    return void interaction.reply({ content: `You are now AFK: **${reason}**`, ephemeral: true });
+    return void interaction.reply({ content: `You are now AFK: **${reason}**`, flags: MessageFlags.Ephemeral });
   }
 
   if (name === 'choose') {
@@ -415,9 +481,9 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
   }
 
   if (name === 'synccommands') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const result = await registerSlashCommands(interaction.guildId || undefined);
-    await interaction.editReply(result.ok ? 'Commands synced for this server.' : 'Sync failed. Check invite scopes and permissions.');
+    await interaction.editReply(result.ok ? 'Commands synced for this server.' : 'Sync failed. Check permissions.');
     return;
   }
 
@@ -426,13 +492,13 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     const sub = interaction.options.getSubcommand();
     if (sub === 'add') {
       const val = interaction.options.getString('value', true).trim();
-      if (val.length > 5) return void interaction.reply({ content: 'Max 5 chars.', ephemeral: true });
+      if (val.length > 5) return void interaction.reply({ content: 'Max 5 chars.', flags: MessageFlags.Ephemeral });
       prefixes[interaction.guildId] = val; savePrefixStore(SETTINGS_FILE, prefixes);
       await interaction.reply(`Prefix set to \`${val}\``);
     } else if (sub === 'remove') {
       delete prefixes[interaction.guildId]; savePrefixStore(SETTINGS_FILE, prefixes);
       await interaction.reply('Prefix reset to global defaults.');
-    } else {
+    } else if (sub === 'list') {
       await interaction.reply(`Active prefixes: \`${getGuildPrefixes(interaction.guildId).join('`, `')}\``);
     }
     return;
@@ -440,7 +506,7 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
 
   if (name === 'say') {
     const channel = interaction.options.getChannel('channel') || interaction.channel;
-    await interaction.reply({ content: 'Sent.', ephemeral: true });
+    await interaction.reply({ content: 'Sent.', flags: MessageFlags.Ephemeral });
     await sendToChannel(channel, interaction.options.getString('text', true));
     return;
   }
@@ -451,9 +517,86 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  if (name === 'userinfo') {
+    const user = interaction.options.getUser('user') || interaction.user;
+    const member = interaction.guild ? await interaction.guild.members.fetch(user.id).catch(() => null) : null;
+    const created = user.createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const joined = member?.joinedAt ? member.joinedAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Unknown';
+    await interaction.reply([`User: **${user.tag}**`, `ID: \`${user.id}\``, `Created: **${created} (IST)**`, `Joined: **${joined}**`].join('\n'));
+    return;
+  }
+
+  if (name === 'serverinfo') {
+    if (!interaction.guild) return void interaction.reply({ content: 'Use this in a server.', flags: MessageFlags.Ephemeral });
+    await interaction.reply([`Server: **${interaction.guild.name}**`, `ID: \`${interaction.guild.id}\``, `Members: **${interaction.guild.memberCount}**`, `Created: **${interaction.guild.createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} (IST)**`].join('\n'));
+    return;
+  }
+
   if (name === 'embed') {
     const msgId = interaction.options.getString('message_id') || undefined;
     await startEmbedBuilder(interaction, msgId);
+    return;
+  }
+
+  if (name === 'tagscript') {
+    const tagName = sanitizeKey(interaction.options.getString('name', true));
+    const content = tags[interaction.guildId!]?.[tagName];
+    if (!content) return void interaction.reply({ content: `Tag not found: ${tagName}`, flags: MessageFlags.Ephemeral });
+    const parsed = await processTagScript(content, interaction, []);
+    await interaction.reply(parsed.text || '*(Empty Output)*');
+    return;
+  }
+
+  if (name === 'alias') {
+    const trigger = sanitizeKey(interaction.options.getString('trigger', true));
+    const output = interaction.options.getString('output', true).trim();
+    const guildAliases = ensureGuildBucket(aliases, interaction.guildId!);
+    guildAliases[trigger] = output; saveStore(ALIAS_FILE, aliases);
+    await interaction.reply({ content: `Alias set: **${trigger}** -> ${output}`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (name === 'aliasdel') {
+    const trigger = sanitizeKey(interaction.options.getString('trigger', true));
+    const guildAliases = ensureGuildBucket(aliases, interaction.guildId!);
+    if (!guildAliases[trigger]) return void interaction.reply({ content: `Alias not found: ${trigger}`, flags: MessageFlags.Ephemeral });
+    delete guildAliases[trigger]; saveStore(ALIAS_FILE, aliases);
+    await interaction.reply({ content: `Removed alias: **${trigger}**`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (name === 'aliases') {
+    const keys = Object.keys(aliases[interaction.guildId!] || {});
+    await interaction.reply({ content: keys.length ? `Aliases:\n${keys.map(k => `- ${k}`).join('\n')}` : 'No aliases yet.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (name === 'tag') {
+    const sub = interaction.options.getSubcommand();
+    const guildTags = ensureGuildBucket(tags, interaction.guildId!);
+    
+    if (sub === 'create') {
+      const tagName = sanitizeKey(interaction.options.getString('name', true));
+      const modal = new ModalBuilder().setCustomId(`tag_create:${interaction.guildId}:${tagName}`).setTitle(`Create Tag`);
+      const contentInput = new TextInputBuilder().setCustomId('content').setLabel('Content').setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(guildTags[tagName] || '');
+      modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(contentInput));
+      await interaction.showModal(modal);
+    } 
+    else if (sub === 'view') {
+      const tagName = sanitizeKey(interaction.options.getString('name', true));
+      const content = guildTags[tagName];
+      if (!content) return void interaction.reply(`Tag not found: ${tagName}`);
+      const parsed = await processTagScript(content, interaction, []);
+      await interaction.reply(parsed.text || '*(Empty Output)*');
+    } 
+    else if (sub === 'delete') {
+      const tagName = sanitizeKey(interaction.options.getString('name', true));
+      delete guildTags[tagName]; saveStore(TAG_FILE, tags);
+      await interaction.reply(`Deleted tag: ${tagName}`);
+    } 
+    else if (sub === 'list') {
+      await interaction.reply(`Tags: ${Object.keys(guildTags).join(', ') || 'None'}`);
+    }
     return;
   }
 
@@ -463,10 +606,10 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     const regexStr = interaction.options.getString('regex');
     let regexPattern: RegExp | undefined;
     if (regexStr) {
-      try { regexPattern = new RegExp(regexStr); } catch { return void interaction.reply({ content: 'Invalid Regex.', ephemeral: true }); }
+      try { regexPattern = new RegExp(regexStr); } catch { return void interaction.reply({ content: 'Invalid Regex.', flags: MessageFlags.Ephemeral }); }
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const res = await executePurge(targetChannel, amount, { userId: interaction.options.getUser('user')?.id, isBot: interaction.options.getString('filter') === 'bot', isHuman: interaction.options.getString('filter') === 'human', hasLink: interaction.options.getString('filter') === 'link', hasInvite: interaction.options.getString('filter') === 'invite', contain: interaction.options.getString('contain'), regex: regexPattern });
     return void interaction.editReply(res.error || `Successfully deleted **${res.deleted}** message(s).`);
   }
@@ -505,7 +648,7 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
       action: name === 'mute' ? 'timeout' : name === 'unmute' ? 'untimeout' : name,
       moderatorMember: interaction.member, targetMember: member, targetUser: user,
       reason: interaction.options.getString('reason') || undefined,
-      reply: async (msg: string) => { await interaction.reply({ content: msg, ephemeral: true }); }
+      reply: async (msg: string) => { await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }); }
     };
     if (name === 'ban') params.deleteDays = interaction.options.getInteger('delete_days') || 0;
     if (name === 'timeout' || name === 'mute') {
@@ -526,7 +669,7 @@ client.on(Events.InteractionCreate, async i => {
     // Embed Builder Button Handler
     if (i.isButton() && i.customId.startsWith('emb_')) {
       const builder = activeEmbedBuilders.get(i.user.id);
-      if (!builder || builder.botMsg.id !== i.message.id) return void i.reply({ content: "This session has expired.", ephemeral: true });
+      if (!builder || builder.botMsg.id !== i.message.id) return void i.reply({ content: "This session has expired.", flags: MessageFlags.Ephemeral });
 
       const action = i.customId.replace('emb_', '');
       
@@ -534,10 +677,10 @@ client.on(Events.InteractionCreate, async i => {
         const finalComponents = builder.buttons.length > 0 ? [new ActionRowBuilder<ButtonBuilder>().addComponents(builder.buttons)] : [];
         if (builder.editTarget) {
           await builder.editTarget.edit({ embeds: [builder.embed], components: finalComponents as any }).catch(() => null);
-          await i.reply({ content: "Embed edited successfully!", ephemeral: true });
+          await i.reply({ content: "Embed edited successfully!", flags: MessageFlags.Ephemeral });
         } else {
           await sendToChannel(i.channel, { embeds: [builder.embed], components: finalComponents });
-          await i.reply({ content: "Embed sent successfully!", ephemeral: true });
+          await i.reply({ content: "Embed sent successfully!", flags: MessageFlags.Ephemeral });
         }
         await builder.botMsg.delete().catch(() => null);
         activeEmbedBuilders.delete(i.user.id);
@@ -547,25 +690,36 @@ client.on(Events.InteractionCreate, async i => {
       if (action === 'exit') {
         await builder.botMsg.delete().catch(() => null);
         activeEmbedBuilders.delete(i.user.id);
-        return void i.reply({ content: "Embed creation cancelled.", ephemeral: true });
+        return void i.reply({ content: "Embed creation cancelled.", flags: MessageFlags.Ephemeral });
       }
 
       builder.awaiting = action;
       if (action === 'addbtn') {
-        return void i.reply({ content: "Give Button content link in chat. Format: `Label | https://link.com` (within 10 minutes)", ephemeral: true });
+        return void i.reply({ content: "Give Button content link in chat. Format: `Label | https://link.com` (within 10 minutes)", flags: MessageFlags.Ephemeral });
       }
       const prompts: Record<string, string> = { title: "title", desc: "description", color: "hex color (like #FF0000)", img: "image URL", thumb: "thumbnail URL", json: "raw JSON format" };
-      return void i.reply({ content: `Enter ${prompts[action]} in the chat within next 10 minutes.`, ephemeral: true });
+      return void i.reply({ content: `Enter ${prompts[action]} in the chat within next 10 minutes.`, flags: MessageFlags.Ephemeral });
+    }
+
+    // Tag Modal Submit
+    if (i.isModalSubmit() && i.customId.startsWith('tag_create:')) {
+      await i.deferReply({ flags: MessageFlags.Ephemeral });
+      const [, guildId, tagName] = i.customId.split(':');
+      const content = i.fields.getTextInputValue('content').trim();
+      const guildTags = ensureGuildBucket(tags, guildId!);
+      guildTags[tagName!] = content; saveStore(TAG_FILE, tags);
+      await i.editReply({ content: `Tag created: **${tagName}**` });
     }
 
     // Giveaway Modal Submit
     if (i.isModalSubmit() && i.customId.startsWith('giveaway_create:')) {
+      await i.deferReply({ flags: MessageFlags.Ephemeral });
       const [, channelId, guildId] = i.customId.split(':');
       const parsed = parseDurationToken(i.fields.getTextInputValue('duration'));
-      if (!parsed.ok) return void i.reply({ content: 'Invalid duration.', ephemeral: true });
+      if (!parsed.ok) return void i.editReply({ content: 'Invalid duration.' });
 
       const channel = await client.channels.fetch(channelId!).catch(() => null);
-      if (!channel) return void i.reply({ content: 'Channel not found.', ephemeral: true });
+      if (!channel) return void i.editReply({ content: 'Channel not found.' });
 
       const giveaway: GiveawayEntry = {
         messageId: '', guildId: guildId!, channelId: channelId!,
@@ -575,19 +729,19 @@ client.on(Events.InteractionCreate, async i => {
       };
 
       const sent = await sendToChannel(channel, { embeds: [buildGiveawayEmbed(giveaway)], components: [createGiveawayRow(false)] });
-      if (!sent) return void i.reply({ content: 'Failed to send giveaway message.', ephemeral: true });
+      if (!sent) return void i.editReply({ content: 'Failed to send giveaway message.' });
 
       giveaway.messageId = sent.id;
       giveaways.set(sent.id, giveaway);
       scheduleGiveawayEnd(sent.id);
-      await i.reply({ content: `Giveaway created in <#${channelId}>.`, ephemeral: true });
+      await i.editReply({ content: `Giveaway created in <#${channelId}>.` });
     }
 
     // Giveaway Join Button
     if (i.isButton() && i.customId === 'giveaway_join') {
       const giveaway = giveaways.get(i.message.id);
-      if (!giveaway || giveaway.ended) return void i.reply({ content: 'Giveaway inactive.', ephemeral: true });
-      if (giveaway.participants.has(i.user.id)) return void i.reply({ content: 'Already joined.', ephemeral: true });
+      if (!giveaway || giveaway.ended) return void i.reply({ content: 'Giveaway inactive.', flags: MessageFlags.Ephemeral });
+      if (giveaway.participants.has(i.user.id)) return void i.reply({ content: 'Already joined.', flags: MessageFlags.Ephemeral });
       giveaway.participants.add(i.user.id);
       await i.update({ embeds: [buildGiveawayEmbed(giveaway)] });
     }
@@ -600,14 +754,14 @@ client.on(Events.MessageCreate, async (m: Message) => {
   // AFK Logic - Welcome Back
   if (afks[m.author.id]) {
     delete afks[m.author.id]; saveStore(AFK_FILE, afks);
-    const r = await m.reply(`Welcome back <@${m.author.id}>! I removed your AFK.`);
-    setTimeout(() => r.delete().catch(() => null), 5000);
+    const r = await m.reply(`Welcome back <@${m.author.id}>! I removed your AFK.`).catch(() => null);
+    if (r) setTimeout(() => r.delete().catch(() => null), 5000);
   }
   
   // AFK Logic - Mention Check
   if (m.mentions.users.size > 0) {
     m.mentions.users.forEach(u => { 
-        if (afks[u.id]) m.reply(`**${u.tag}** is AFK right now! Reason: "**${afks[u.id].reason}**"`); 
+        if (afks[u.id]) m.reply(`**${u.tag}** is AFK right now! Reason: "**${afks[u.id].reason}**"`).catch(() => null); 
     });
   }
 
@@ -630,39 +784,60 @@ client.on(Events.MessageCreate, async (m: Message) => {
         }
       } catch {
         success = false;
-        const err = await m.reply("Invalid input format!");
-        setTimeout(() => err.delete().catch(() => null), 3000);
+        const err = await m.reply("Invalid input format!").catch(() => null);
+        if (err) setTimeout(() => err.delete().catch(() => null), 3000);
       }
       builder.awaiting = null;
-      if (success) await builder.botMsg.edit({ embeds: [builder.embed], components: getEmbedUIRows(builder) }).catch(() => null);
+      if (success) await builder.botMsg.edit({ embeds: [builder.embed], components: getEmbedUIRows(builder) as any }).catch(() => null);
       if (m.deletable) await m.delete().catch(() => null);
       return; 
     }
   }
 
-  const prefix = resolveMatchedPrefix(m.guildId, m.content);
-  if (!prefix) {
-    const aliasReply = getAliasReply(m.guildId, m.content);
-    if (aliasReply) await m.reply(aliasReply);
+  // Check Alias Triggers first
+  const words = m.content.split(/\s+/);
+  let aliasReply = null;
+  let aliasArgs: string[] = [];
+
+  for (let i = words.length; i > 0; i--) {
+    const possibleTrigger = words.slice(0, i).join(' ').toLowerCase();
+    const found = (m.guildId && aliases[m.guildId] && aliases[m.guildId][possibleTrigger]) || GLOBAL_ALIASES[possibleTrigger];
+    if (found) {
+      aliasReply = found;
+      aliasArgs = words.slice(i);
+      break;
+    }
+  }
+
+  if (aliasReply) {
+    const parsed = await processTagScript(aliasReply, m, aliasArgs);
+    if (parsed.shouldDelete && m.deletable) await m.delete().catch(() => null);
+    if (parsed.text) {
+       if (parsed.shouldDelete) await sendToChannel(m.channel, parsed.text);
+       else await m.reply(parsed.text).catch(() => null);
+    }
     return;
   }
+
+  const prefix = resolveMatchedPrefix(m.guildId, m.content);
+  if (!prefix) return;
 
   const args = m.content.slice(prefix.length).trim().split(/\s+/);
   const cmd = args.shift()?.toLowerCase();
 
-  if (cmd === 'ping') return void m.reply(`Ping Pong Is **${client.ws.ping}ms~**`);
-  if (cmd === 'uptime') return void m.reply(`Uptime: **${getUptimeText()}**`);
-  if (cmd === 'botinfo') return void m.reply([`Bot: **${client.user?.tag}**`, `Servers: **${client.guilds.cache.size}**`, `Uptime: **${getUptimeText()}**`].join('\n'));
-  if (cmd === 'help') return void m.reply(buildHelpText(getPrimaryPrefix(m.guildId)));
+  if (cmd === 'ping') return void m.reply(`Ping Pong Is **${client.ws.ping}ms~**`).catch(() => null);
+  if (cmd === 'uptime') return void m.reply(`Uptime: **${getUptimeText()}**`).catch(() => null);
+  if (cmd === 'botinfo') return void m.reply([`Bot: **${client.user?.tag}**`, `Servers: **${client.guilds.cache.size}**`, `Uptime: **${getUptimeText()}**`].join('\n')).catch(() => null);
+  if (cmd === 'help') return void m.reply(buildHelpText(getPrimaryPrefix(m.guildId))).catch(() => null);
 
   if (cmd === 'afk') {
     const reason = args.join(' ') || 'AFK';
     afks[m.author.id] = { reason, time: Date.now() }; saveStore(AFK_FILE, afks);
-    return void m.reply(`You are now AFK: **${reason}**`);
+    return void m.reply(`You are now AFK: **${reason}**`).catch(() => null);
   }
   
   if (cmd === 'embed') {
-    if (!m.member?.permissions.has(PermissionFlagsBits.ManageMessages)) return void m.reply('No permission.');
+    if (!m.member?.permissions.has(PermissionFlagsBits.ManageMessages)) return void m.reply('No permission.').catch(() => null);
     let editId = args[0] === 'edit' ? args[1] : undefined;
     await startEmbedBuilder(m, editId);
     return;
@@ -699,28 +874,51 @@ client.on(Events.MessageCreate, async (m: Message) => {
   }
 
   if (cmd === 'alias_global_set') {
-    if (!m.member?.permissions.has(PermissionFlagsBits.Administrator)) return void m.reply('No permission.');
+    if (!m.member?.permissions.has(PermissionFlagsBits.Administrator)) return void m.reply('No permission.').catch(() => null);
     const trigger = sanitizeKey(args.shift() || '');
     const output = args.join(' ').trim();
-    if (!trigger || !output) return void m.reply(`Usage: ${prefix}alias_global_set <trigger> <output text>`);
+    if (!trigger || !output) return void m.reply(`Usage: ${prefix}alias_global_set <trigger> <output text>`).catch(() => null);
     GLOBAL_ALIASES[trigger] = output; savePrefixStore(SETTINGS_FILE, prefixes);
-    return void m.reply(`Global Alias set: **${trigger}**`);
+    return void m.reply(`Global Alias set: **${trigger}**`).catch(() => null);
   }
 
   if (cmd === 'alias_global_del') {
-    if (!m.member?.permissions.has(PermissionFlagsBits.Administrator)) return void m.reply('No permission.');
+    if (!m.member?.permissions.has(PermissionFlagsBits.Administrator)) return void m.reply('No permission.').catch(() => null);
     const trigger = sanitizeKey(args.shift() || '');
-    if (!trigger || !GLOBAL_ALIASES[trigger]) return void m.reply(`Alias not found.`);
+    if (!trigger || !GLOBAL_ALIASES[trigger]) return void m.reply(`Alias not found.`).catch(() => null);
     delete GLOBAL_ALIASES[trigger]; savePrefixStore(SETTINGS_FILE, prefixes);
-    return void m.reply(`Removed Global Alias: **${trigger}**`);
+    return void m.reply(`Removed Global Alias: **${trigger}**`).catch(() => null);
   }
 
   if (cmd === 'set_prefix_global_ds') {
     if (args.length > 0) {
       DEFAULT_PREFIXES = args; savePrefixStore(SETTINGS_FILE, prefixes);
-      return void m.reply(`Global prefixes updated to: \`${DEFAULT_PREFIXES.join('`, `')}\``);
+      return void m.reply(`Global prefixes updated to: \`${DEFAULT_PREFIXES.join('`, `')}\``).catch(() => null);
     }
+  }
+
+  if (['kick', 'ban', 'timeout', 'mute', 'untimeout', 'unmute'].includes(cmd!)) {
+    if (!m.guild || !m.member) return;
+    const targetUser = m.mentions.users.first();
+    if (!targetUser) return void m.reply(`Mention a user.`).catch(() => null);
+    const argsNoMention = args.filter(arg => !arg.startsWith('<@'));
+    const member = await m.guild.members.fetch(targetUser.id).catch(() => null);
+
+    const params: any = {
+      action: cmd === 'mute' ? 'timeout' : cmd === 'unmute' ? 'untimeout' : cmd,
+      moderatorMember: m.member, targetMember: member, targetUser: targetUser,
+      reason: argsNoMention.join(' ') || undefined,
+      reply: async (text: string) => { await m.reply(text).catch(() => null); }
+    };
+    
+    if (cmd === 'timeout' || cmd === 'mute') {
+      const parsed = parseDurationToken(argsNoMention[0]);
+      if (!parsed.ok) return void m.reply(`Usage: ${prefix}${cmd} @user <10min/30sec>`).catch(() => null);
+      params.reason = argsNoMention.slice(1).join(' '); params.timeoutMs = parsed.ms; params.timeoutLabel = parsed.label;
+    }
+    await runModerationAction(params);
   }
 });
 
 client.login(TOKEN);
+// END OF FILE
