@@ -604,7 +604,7 @@ function loginWithTimeout(): Promise<'ok' | 'timeout' | Error> {
 
 async function boot(): Promise<void> {
   rawLog('[BOOT] Starting Dhaniya Sir...');
-  rawLog(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT}`);
+  rawLog(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT || '(none — Background Worker mode)'}`);
   rawLog(`[BOOT] Token present: ${!!TOKEN}  CLIENT_ID: ${process.env.CLIENT_ID ?? 'unset'}`);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
