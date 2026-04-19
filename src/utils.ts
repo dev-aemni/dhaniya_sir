@@ -6,7 +6,7 @@ import {
 } from 'discord.js';
 import {
   TOKEN, CLIENT_ID, GUILD_ID, BOT_START_TIME, MAX_TIMEOUT_MS,
-  OPENROUTER_API_KEY, SYSTEM_PROMPT, SETTINGS_FILE,
+  OPENROUTER_API_KEY, SYSTEM_PROMPT, SYSTEM_AI_PROVIDER, SETTINGS_FILE, OWNER_ID,
 } from './config';
 import {
   aliases, tags, prefixes, afks, giveaways, activeEmbedBuilders, activeChatSessions,
@@ -47,8 +47,8 @@ export function buildHelpText(p: string = DEFAULT_PREFIXES[0]): string {
     `**Aliases:** alias, unalias, aliases\n` +
     `**Tags:** tag, tagcreate, tagscript, tagdelete, tags\n` +
     `**Moderation:** kick, ban, timeout, mute, untimeout, unmute\n` +
-    `**AI Chat:** \`${p}chat <message>\` — talk to Dhaniya Sir AI\n` +
-    `**Slash:** Use \`/\` to see all slash commands`;
+    `**AI Chat:** \`${p}chat <message>\` or \`${p}'' <message>\` — talk to Dhaniya Sir AI (use \`${p}chat_clear\` to reset history)\n` +
+    `**Slash:** Use \`/\` to see all slash commands (includes /chat for AI)`;
 }
 export function parseDurationToken(token: string | undefined): { ok: true; ms: number; label: string } | { ok: false; error: 'invalid' | 'too_long' } {
   if (!token) return { ok: false, error: 'invalid' };
@@ -98,7 +98,7 @@ export async function registerSlashCommands(
 }
 
 // =============================================================================
-// TAGSCRIPT ENGINE
+// TAGSCRIPT ENGINE — Full TagScript Support
 // =============================================================================
 export async function processTagScript(content: string, ctx: Message | ChatInputCommandInteraction, args: string[]) {
   let text = content;
@@ -119,14 +119,18 @@ export async function processTagScript(content: string, ctx: Message | ChatInput
     '{user.id}':            user.id,
     '{user.avatar}':        user.displayAvatarURL(),
     '{user.color}':         member?.displayHexColor || '#000000',
+    '{user.tag}':           user.tag,
+    '{user.created}':       user.createdAt.toLocaleString(),
     '{server}':             guild?.name || 'Unknown Server',
     '{server.id}':          guild?.id   || 'Unknown ID',
     '{server.memberCount}': guild?.memberCount?.toString() || '0',
+    '{server.icon}':        guild?.iconURL() || '',
     '{channel}':            ch?.name || 'Unknown Channel',
     '{channel.id}':         ch?.id   || 'Unknown ID',
     '{channel.mention}':    ch?.id   ? `<#${ch.id}>` : 'Unknown Channel',
     '{args}':               args.join(' '),
     '{unix}':               Math.floor(Date.now() / 1000).toString(),
+    '{now}':                new Date().toLocaleString(),
   };
 
   let targetStr = map['{user}'];
@@ -135,10 +139,17 @@ export async function processTagScript(content: string, ctx: Message | ChatInput
 
   for (const [k, v] of Object.entries(map)) text = text.split(k).join(v);
   text = text.replace(/\{(\d+)\}/g, (_, p) => args[parseInt(p) - 1] || '');
+  
+  // {random:a,b,c} — pick random item
   text = text.replace(/\{random:\s*([^}]+)\}/gi, (_, p) => {
-    const opts = p.split(',').map((s: string) => s.trim());
-    return opts[Math.floor(Math.random() * opts.length)] || '';
+    const opts = p.split(/[,~]/).map((s: string) => s.trim()).filter(Boolean);
+    return opts.length > 0 ? opts[Math.floor(Math.random() * opts.length)] : '';
   });
+  
+  // {5050:msg} — 50% chance
+  text = text.replace(/\{5050:([^}]+)\}/gi, (_, msg) => Math.random() < 0.5 ? msg : '');
+  
+  // {if(condition):true|false} — conditional
   text = text.replace(/\{if\((.*?)(==|!=|<|>|<=|>=)(.*?)\):(.*?)(?:\|(.*?))?\}/gi,
     (_, left, op, right, onTrue, onFalse) => {
       left = left.trim(); right = right.trim();
@@ -146,6 +157,42 @@ export async function processTagScript(content: string, ctx: Message | ChatInput
       const r = op==='=='?left===right:op==='!='?left!==right:num&&op==='<'?nl<nr:num&&op==='>'?nl>nr:num&&op==='<='?nl<=nr:num&&op==='>='?nl>=nr:false;
       return r ? onTrue : (onFalse || '');
     });
+  
+  // {range:1-10} — random integer
+  text = text.replace(/\{range:(\d+)-(\d+)\}/gi, (_, min, max) => {
+    const n1 = parseInt(min), n2 = parseInt(max);
+    return String(Math.floor(Math.random() * (n2 - n1 + 1)) + n1);
+  });
+  
+  // {length:text} — string length
+  text = text.replace(/\{length:([^}]+)\}/gi, (_, str) => String(str.length));
+  
+  // {upper:text} and {lower:text} — case conversion
+  text = text.replace(/\{upper:([^}]+)\}/gi, (_, str) => str.toUpperCase());
+  text = text.replace(/\{lower:([^}]+)\}/gi, (_, str) => str.toLowerCase());
+  
+  // {capitalize:text} — capitalize first letter
+  text = text.replace(/\{capitalize:([^}]+)\}/gi, (_, str) => str.charAt(0).toUpperCase() + str.slice(1).toLowerCase());
+  
+  // {replace(find,replace):text} — replace all occurrences
+  text = text.replace(/\{replace\(([^,]+),([^)]+)\):([^}]+)\}/gi, (_, find, replace, str) => {
+    try {
+      return str.replaceAll(find, replace);
+    } catch {
+      return str;
+    }
+  });
+  
+  // {slice(start-end):text} — substring
+  text = text.replace(/\{slice\((\d+)-(\d+)\):([^}]+)\}/gi, (_, start, end, str) => {
+    return str.slice(parseInt(start), parseInt(end));
+  });
+  
+  // {in(param):payload} — check if param is in payload
+  text = text.replace(/\{in\(([^)]+)\):([^}]+)\}/gi, (_, param, payload) => {
+    return payload.includes(param) ? 'true' : 'false';
+  });
+  
   return { text: text.trim(), shouldDelete };
 }
 
@@ -318,24 +365,37 @@ export async function endGiveaway(client: Client, id: string) {
 const CHAT_SESSION_TTL = 30 * 60 * 1000; // 30 min of inactivity resets session
 const CHAT_MAX_HISTORY = 20;              // keep last 20 turns per user
 
-export async function handleAIChat(m: Message, userInput: string): Promise<void> {
+export async function handleAIChat(ctx: Message | ChatInputCommandInteraction, userInput: string): Promise<void> {
   if (!userInput.trim()) {
-    await m.reply('Tell me something! Usage: `chat <your message>`').catch(() => null);
+    if (ctx instanceof Message) {
+      await ctx.reply('Tell me something! Usage: `chat <your message>`').catch(() => null);
+    } else {
+      await ctx.editReply('Tell me something!');
+    }
     return;
   }
   if (!OPENROUTER_API_KEY) {
-    await m.reply('❌ OpenRouter API key not configured in `.env` (`openrouter_api=sk-...`).').catch(() => null);
+    const msg = '❌ OpenRouter API key not configured in `.env` (`openrouter_api=sk-...`).';
+    if (ctx instanceof Message) {
+      await ctx.reply(msg).catch(() => null);
+    } else {
+      await ctx.editReply(msg);
+    }
     return;
   }
 
   // Typing indicator while we wait
-  await (m.channel as any).sendTyping?.().catch(() => null);
+  if (ctx instanceof Message) {
+    await (ctx.channel as any).sendTyping?.().catch(() => null);
+  }
+
+  const userId = ctx instanceof Message ? ctx.author.id : ctx.user.id;
 
   // Get or create session
-  let session = activeChatSessions.get(m.author.id);
+  let session = activeChatSessions.get(userId);
   if (!session || Date.now() - session.lastActivity > CHAT_SESSION_TTL) {
     session = { history: [], lastActivity: Date.now() };
-    activeChatSessions.set(m.author.id, session);
+    activeChatSessions.set(userId, session);
   }
   session.history.push({ role: 'user', content: userInput });
   session.lastActivity = Date.now();
@@ -354,7 +414,7 @@ export async function handleAIChat(m: Message, userInput: string): Promise<void>
         'X-Title':        'Dhaniya Sir Discord Bot',
       },
       body: JSON.stringify({
-        model:    'google/gemini-2.0-flash-001',
+        model:    SYSTEM_AI_PROVIDER,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           ...session.history,
@@ -366,31 +426,136 @@ export async function handleAIChat(m: Message, userInput: string): Promise<void>
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.error('[AI] OpenRouter error:', res.status, errText);
-      await m.reply(`⚠️ AI error (${res.status}). Try again later.`).catch(() => null);
+      const errMsg = `⚠️ AI error (${res.status}). Try again later.`;
+      if (ctx instanceof Message) {
+        await ctx.reply(errMsg).catch(() => null);
+      } else {
+        await ctx.editReply(errMsg);
+      }
       return;
     }
 
     const data  = await res.json() as any;
-    const reply = data?.choices?.[0]?.message?.content?.trim() || '*(no response)*';
+    let reply = data?.choices?.[0]?.message?.content?.trim() || '*(no response)*';
 
     // Save assistant reply to history
     session.history.push({ role: 'assistant', content: reply });
 
+    // Try to parse and execute JSON action block if present
+    let actionResult: string | null = null;
+    const jsonMatch = reply.match(/\{[^}]*"action"[^}]*\}/);
+    if (jsonMatch) {
+      try {
+        const action = JSON.parse(jsonMatch[0]);
+        // Only execute if the user is the owner
+        const isOwner = (ctx instanceof Message ? ctx.author.id : ctx.user.id) === OWNER_ID;
+        if (isOwner) {
+          actionResult = await parseAndExecuteAction(action, ctx);
+          if (actionResult) {
+            // Remove the JSON block from the reply and replace with result
+            reply = reply.replace(/\{[^}]*"action"[^}]*\}/, actionResult).trim();
+          }
+        }
+      } catch {
+        // Not valid JSON action, just show it as-is
+      }
+    }
+
     // Discord messages max 2000 chars — split if needed
-    if (reply.length <= 2000) {
-      await m.reply(reply).catch(() => null);
+    if (ctx instanceof Message) {
+      if (reply.length <= 2000) {
+        await ctx.reply(reply).catch(() => null);
+      } else {
+        const chunks: string[] = [];
+        for (let i = 0; i < reply.length; i += 1900) chunks.push(reply.slice(i, i + 1900));
+        for (const chunk of chunks) await ctx.reply(chunk).catch(() => null);
+      }
     } else {
-      const chunks: string[] = [];
-      for (let i = 0; i < reply.length; i += 1900) chunks.push(reply.slice(i, i + 1900));
-      for (const chunk of chunks) await m.reply(chunk).catch(() => null);
+      if (reply.length <= 2000) {
+        await ctx.editReply(reply);
+      } else {
+        const chunks: string[] = [];
+        for (let i = 0; i < reply.length; i += 1900) chunks.push(reply.slice(i, i + 1900));
+        await ctx.editReply(chunks[0]);
+        for (const chunk of chunks.slice(1)) {
+          await ctx.followUp(chunk).catch(() => null);
+        }
+      }
     }
   } catch (err) {
     console.error('[AI] Fetch error:', err);
-    await m.reply('⚠️ Could not reach the AI. Check your internet/API key.').catch(() => null);
+    const errMsg = '⚠️ Could not reach the AI. Check your internet/API key.';
+    if (ctx instanceof Message) {
+      await ctx.reply(errMsg).catch(() => null);
+    } else {
+      await ctx.editReply(errMsg);
+    }
   }
 }
 
 /** Let owner clear their AI chat history */
 export function clearChatSession(userId: string): boolean {
   return activeChatSessions.delete(userId);
+}
+
+// =============================================================================
+// JSON ACTION PARSER — Parse and execute AI-generated action blocks
+// =============================================================================
+export async function parseAndExecuteAction(action: any, ctx: Message | ChatInputCommandInteraction): Promise<string | null> {
+  if (!action || typeof action !== 'object') return null;
+  
+  const guild = ctx.guild;
+  if (!guild) return null;
+  
+  const actionType = action.action?.toLowerCase?.();
+  
+  if (actionType === 'create_channel') {
+    const { name, category, topic, nsfw } = action;
+    if (!name) return 'Channel name is required.';
+    try {
+      const categoryId = category ? guild.channels.cache.find(c => c.name === category || c.id === category)?.id : undefined;
+      const newChannel = await guild.channels.create({
+        name: String(name).slice(0, 100),
+        topic: topic ? String(topic).slice(0, 1024) : undefined,
+        nsfw: Boolean(nsfw),
+        parent: categoryId,
+        type: 0, // GUILD_TEXT
+      });
+      return `✅ Created channel: ${newChannel}`;
+    } catch (err) {
+      return `❌ Failed to create channel: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  
+  if (actionType === 'add_role') {
+    const { userId: targetId, roleName } = action;
+    if (!targetId || !roleName) return 'userId and roleName required.';
+    try {
+      const member = await guild.members.fetch(String(targetId)).catch(() => null);
+      if (!member) return 'User not found.';
+      const role = guild.roles.cache.find(r => r.name === roleName || r.id === targetId);
+      if (!role) return `Role "${roleName}" not found.`;
+      await member.roles.add(role);
+      return `✅ Added role **${role.name}** to **${member.user.tag}**`;
+    } catch (err) {
+      return `❌ Failed to add role: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  
+  if (actionType === 'remove_role') {
+    const { userId: targetId, roleName } = action;
+    if (!targetId || !roleName) return 'userId and roleName required.';
+    try {
+      const member = await guild.members.fetch(String(targetId)).catch(() => null);
+      if (!member) return 'User not found.';
+      const role = guild.roles.cache.find(r => r.name === roleName || r.id === targetId);
+      if (!role) return `Role "${roleName}" not found.`;
+      await member.roles.remove(role);
+      return `✅ Removed role **${role.name}** from **${member.user.tag}**`;
+    } catch (err) {
+      return `❌ Failed to remove role: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  
+  return null;
 }

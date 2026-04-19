@@ -104,6 +104,10 @@ export const slashCommands = [
     .addSubcommand(s => s.setName('list').setDescription('List all tags'))
     .addSubcommand(s => s.setName('delete').setDescription('Delete a tag').addStringOption(o => o.setName('name').setDescription('Tag name').setRequired(true))),
   new SlashCommandBuilder()
+    .setName('chat')
+    .setDescription('Chat with Dhaniya Sir AI')
+    .addStringOption(o => o.setName('message').setDescription('Your message to the AI').setRequired(true)),
+  new SlashCommandBuilder()
     .setName('kick')
     .setDescription('Kick a member.')
     .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))

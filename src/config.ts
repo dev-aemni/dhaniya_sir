@@ -15,6 +15,7 @@ export const OWNER_ID = '1336387088320565360';
 // ── AI / OpenRouter ───────────────────────────────────────────────────────────
 export const OPENROUTER_API_KEY = process.env.openrouter_api || process.env.opentrouter_api || '';
 export const SYSTEM_PROMPT      = process.env.system_prompt  || 'You are Dhaniya Sir, a helpful Discord bot.';
+export const SYSTEM_AI_PROVIDER = process.env.system_AI  || 'google/gemini-2.0-flash-001';
 
 if (!TOKEN) throw new Error('Missing TOKEN in .env');
 

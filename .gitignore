@@ -2,7 +2,10 @@
 node_modules/
 dist
 dhnaiya_sir/
-.remindme
+dhnaiya_sir/*.txt
+dhnaiya_sir/*.zip
+*.remindme
 tempCodeRunnerFile.bat
 desktop.ini
 *.log
+install.cmd

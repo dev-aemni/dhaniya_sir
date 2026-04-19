@@ -197,6 +197,13 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  if (name === 'chat') {
+    const message = interaction.options.getString('message', true);
+    await interaction.deferReply();
+    await handleAIChat(interaction, message);
+    return;
+  }
+
   if (name === 'purge') {
     const amount     = interaction.options.getInteger('amount', true);
     const targetChan = interaction.options.getChannel('channel') || interaction.channel;
@@ -508,7 +515,7 @@ client.on(Events.MessageCreate, async (m: Message) => {
   }
 
   // ── AI Chat ───────────────────────────────────────────────────────────────
-  if (cmd === 'chat') {
+  if (cmd === 'chat' || cmd === '' || cmd === "'") {
     await handleAIChat(m, args.join(' '));
     return;
   }
