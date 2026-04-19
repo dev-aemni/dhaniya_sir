@@ -269,11 +269,10 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
 // EVENT: READY
 // =============================================================================
 client.once(Events.ClientReady, async c => {
-  console.log(`[READY] Online as ${c.user.tag}!`);
-  // Fire-and-forget: never block the ready event on HTTP calls
+  process.stdout.write(`[READY] Online as ${c.user.tag}!\n`);
   registerSlashCommands(slashCommands).then(r => {
-    console.log(`[CMDS] Slash sync: ${r.ok ? 'OK' : 'FAILED (non-fatal)'}`);
-  }).catch(err => console.error('[CMDS] Slash sync error:', err));
+    process.stdout.write(`[CMDS] Slash sync: ${r.ok ? 'OK' : 'FAILED (non-fatal)'}\n`);
+  }).catch(err => process.stderr.write(`[CMDS] Slash sync error: ${err}\n`));
 });
 
 // =============================================================================
@@ -580,64 +579,71 @@ client.on(Events.MessageCreate, async (m: Message) => {
 });
 
 // =============================================================================
-// BOOT — login with per-attempt timeout, no client.destroy() abuse
+// BOOT
 // =============================================================================
-// How this works:
-//   discord.js login() involves: 1) REST token validation  2) WS gateway URL fetch
-//   3) WebSocket TCP connect  4) WS IDENTIFY handshake  5) READY event
-//   On Render free-tier, step 3 or 4 can hang indefinitely (no rejection, no error).
-//   We wrap each attempt in a manual timeout that races against login().
-//   If it times out we log it, wait, then try again WITHOUT destroying the client
-//   (destroy() on an un-connected client corrupts internal state in discord.js 14).
+// Force stdout/stderr to flush immediately — critical on Render where buffered
+// output can disappear if the process exits or hangs before the buffer drains.
+const rawLog = (msg: string) => process.stdout.write(msg + '\n');
+const rawErr = (msg: string) => process.stderr.write(msg + '\n');
 
 const MAX_RETRIES      = 5;
-const LOGIN_TIMEOUT_MS = 45_000; // 45 s per attempt
-const RETRY_DELAY_MS   = 8_000;  // 8 s between attempts
+const LOGIN_TIMEOUT_MS = 45_000;
+const RETRY_DELAY_MS   = 8_000;
+
+function loginWithTimeout(): Promise<'ok' | 'timeout' | Error> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve('timeout');
+    }, LOGIN_TIMEOUT_MS);
+
+    client.login(TOKEN)
+      .then(() => {
+        clearTimeout(timer);
+        resolve('ok');
+      })
+      .catch((err: unknown) => {
+        clearTimeout(timer);
+        resolve(err instanceof Error ? err : new Error(String(err)));
+      });
+  });
+}
 
 async function boot(): Promise<void> {
-  console.log('[BOOT] Starting Dhaniya Sir...');
-  console.log(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT}`);
-  console.log(`[BOOT] Token present: ${!!TOKEN}  CLIENT_ID: ${process.env.CLIENT_ID ?? 'unset'}`);
+  rawLog('[BOOT] Starting Dhaniya Sir...');
+  rawLog(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT}`);
+  rawLog(`[BOOT] Token present: ${!!TOKEN}  CLIENT_ID: ${process.env.CLIENT_ID ?? 'unset'}`);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    console.log(`[BOOT] Login attempt ${attempt}/${MAX_RETRIES}...`);
+    rawLog(`[BOOT] Login attempt ${attempt}/${MAX_RETRIES}...`);
 
-    const result = await Promise.race([
-      // Attempt login — resolves when WS IDENTIFY is acknowledged
-      client.login(TOKEN).then(() => 'ok' as const).catch((err: Error) => err),
-      // Hard timeout in case login() hangs without rejecting
-      new Promise<'timeout'>((resolve) =>
-        setTimeout(() => resolve('timeout'), LOGIN_TIMEOUT_MS)
-      ),
-    ]);
+    const result = await loginWithTimeout();
 
     if (result === 'ok') {
-      console.log('[BOOT] login() resolved — waiting for ClientReady...');
-      return; // success
+      rawLog('[BOOT] login() resolved — waiting for ClientReady...');
+      return;
     }
 
     if (result === 'timeout') {
-      console.error(`[BOOT] Attempt ${attempt} timed out after ${LOGIN_TIMEOUT_MS / 1000}s`);
+      rawErr(`[BOOT] Attempt ${attempt} timed out after ${LOGIN_TIMEOUT_MS / 1000}s`);
     } else {
-      // result is an Error object
-      console.error(`[BOOT] Attempt ${attempt} error: ${result.message}`);
+      rawErr(`[BOOT] Attempt ${attempt} error: ${result.message}`);
     }
 
     if (attempt === MAX_RETRIES) {
-      console.error('[BOOT] All attempts failed — exiting for Render to restart.');
+      rawErr('[BOOT] All attempts failed — exiting.');
       process.exit(1);
     }
 
-    console.log(`[BOOT] Waiting ${RETRY_DELAY_MS / 1000}s before retry...`);
+    rawLog(`[BOOT] Waiting ${RETRY_DELAY_MS / 1000}s before next attempt...`);
     await new Promise<void>((r) => setTimeout(r, RETRY_DELAY_MS));
   }
 }
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[PROCESS] Unhandled rejection:', reason);
+  process.stderr.write('[PROCESS] Unhandled rejection: ' + String(reason) + '\n');
 });
 process.on('uncaughtException', (err: Error) => {
-  console.error('[PROCESS] Uncaught exception:', err.message);
+  process.stderr.write('[PROCESS] Uncaught exception: ' + err.message + '\n');
   process.exit(1);
 });
 
