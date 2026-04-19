@@ -43,22 +43,14 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.MessageContent,
   ],
-  // Render-specific: give the WS handshake more time and allow reconnects
-  ws: {
-    large_threshold: 50,
-  },
-  rest: {
-    // Longer REST timeout for slow cold-start network on Render free tier
-    timeout: 20_000,
-  },
 });
 
-// Log WS errors and reconnects so we can see them in Render's dashboard
-client.on('error',   (err) => console.error('[WS] Client error:', err.message));
-client.on('warn',    (msg) => console.warn('[WS] Warning:', msg));
-client.on('shardDisconnect', (ev, id) => console.warn(`[WS] Shard ${id} disconnected. Code: ${ev.code}`));
-client.on('shardReconnecting', (id) => console.log(`[WS] Shard ${id} reconnecting...`));
-client.on('shardResume', (id, r) => console.log(`[WS] Shard ${id} resumed. Replayed ${r} events.`));
+// WS diagnostics — visible in Render's log dashboard
+client.on('error',           (err)    => console.error('[WS] Error:', err.message));
+client.on('warn',            (msg)    => console.warn('[WS] Warn:', msg));
+client.on('shardDisconnect', (ev, id) => console.warn(`[WS] Shard ${id} disconnected (code ${ev.code})`));
+client.on('shardReconnecting',(id)    => console.log(`[WS] Shard ${id} reconnecting...`));
+client.on('shardResume',     (id, r)  => console.log(`[WS] Shard ${id} resumed (${r} events)`));
 
 if (PORT) {
   http.createServer((req, res) => {
@@ -588,62 +580,63 @@ client.on(Events.MessageCreate, async (m: Message) => {
 });
 
 // =============================================================================
-// BOOT — with timeout guard and full error handling
+// BOOT — login with per-attempt timeout, no client.destroy() abuse
 // =============================================================================
-// =============================================================================
-// BOOT — retry with backoff so a single Render network hiccup doesn't loop
-// =============================================================================
-const MAX_RETRIES     = 5;
-const BASE_DELAY_MS   = 5_000;   // 5 s initial wait between retries
-const LOGIN_TIMEOUT_MS = 60_000; // 60 s per attempt (Render cold-start can be slow)
+// How this works:
+//   discord.js login() involves: 1) REST token validation  2) WS gateway URL fetch
+//   3) WebSocket TCP connect  4) WS IDENTIFY handshake  5) READY event
+//   On Render free-tier, step 3 or 4 can hang indefinitely (no rejection, no error).
+//   We wrap each attempt in a manual timeout that races against login().
+//   If it times out we log it, wait, then try again WITHOUT destroying the client
+//   (destroy() on an un-connected client corrupts internal state in discord.js 14).
 
-async function tryLogin(attempt: number): Promise<void> {
-  console.log(`[BOOT] Login attempt ${attempt}/${MAX_RETRIES}...`);
+const MAX_RETRIES      = 5;
+const LOGIN_TIMEOUT_MS = 45_000; // 45 s per attempt
+const RETRY_DELAY_MS   = 8_000;  // 8 s between attempts
 
-  // Destroy any stale WS from a previous failed attempt
-  try { client.destroy(); } catch { /* ignore */ }
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`Timed out after ${LOGIN_TIMEOUT_MS}ms`));
-    }, LOGIN_TIMEOUT_MS);
-
-    client.login(TOKEN)
-      .then(() => { clearTimeout(timer); resolve(); })
-      .catch((err) => { clearTimeout(timer); reject(err); });
-  });
-}
-
-async function boot() {
+async function boot(): Promise<void> {
   console.log('[BOOT] Starting Dhaniya Sir...');
   console.log(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT}`);
+  console.log(`[BOOT] Token present: ${!!TOKEN}  CLIENT_ID: ${process.env.CLIENT_ID ?? 'unset'}`);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      await tryLogin(attempt);
-      console.log('[BOOT] client.login() resolved — waiting for ClientReady event...');
-      return; // success — rest of the bot runs via event handlers
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[BOOT] Attempt ${attempt} failed: ${msg}`);
+    console.log(`[BOOT] Login attempt ${attempt}/${MAX_RETRIES}...`);
 
-      if (attempt === MAX_RETRIES) {
-        console.error('[BOOT] All retries exhausted. Exiting so Render can restart the service.');
-        process.exit(1);
-      }
+    const result = await Promise.race([
+      // Attempt login — resolves when WS IDENTIFY is acknowledged
+      client.login(TOKEN).then(() => 'ok' as const).catch((err: Error) => err),
+      // Hard timeout in case login() hangs without rejecting
+      new Promise<'timeout'>((resolve) =>
+        setTimeout(() => resolve('timeout'), LOGIN_TIMEOUT_MS)
+      ),
+    ]);
 
-      const delay = BASE_DELAY_MS * attempt; // 5s, 10s, 15s, 20s
-      console.log(`[BOOT] Retrying in ${delay / 1000}s...`);
-      await new Promise(r => setTimeout(r, delay));
+    if (result === 'ok') {
+      console.log('[BOOT] login() resolved — waiting for ClientReady...');
+      return; // success
     }
+
+    if (result === 'timeout') {
+      console.error(`[BOOT] Attempt ${attempt} timed out after ${LOGIN_TIMEOUT_MS / 1000}s`);
+    } else {
+      // result is an Error object
+      console.error(`[BOOT] Attempt ${attempt} error: ${result.message}`);
+    }
+
+    if (attempt === MAX_RETRIES) {
+      console.error('[BOOT] All attempts failed — exiting for Render to restart.');
+      process.exit(1);
+    }
+
+    console.log(`[BOOT] Waiting ${RETRY_DELAY_MS / 1000}s before retry...`);
+    await new Promise<void>((r) => setTimeout(r, RETRY_DELAY_MS));
   }
 }
 
-// Surface any WS errors that occur after successful login
 process.on('unhandledRejection', (reason) => {
   console.error('[PROCESS] Unhandled rejection:', reason);
 });
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', (err: Error) => {
   console.error('[PROCESS] Uncaught exception:', err.message);
   process.exit(1);
 });
