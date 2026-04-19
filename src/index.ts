@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import http from 'node:http';
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   ChatInputCommandInteraction, Client, EmbedBuilder,
@@ -52,12 +51,7 @@ client.on('shardDisconnect', (ev, id) => console.warn(`[WS] Shard ${id} disconne
 client.on('shardReconnecting',(id)    => console.log(`[WS] Shard ${id} reconnecting...`));
 client.on('shardResume',     (id, r)  => console.log(`[WS] Shard ${id} resumed (${r} events)`));
 
-if (PORT) {
-  http.createServer((req, res) => {
-    res.writeHead(200);
-    res.end(req.url === '/healthz' ? 'ok' : 'Dhaniya Sir is running');
-  }).listen(PORT, '0.0.0.0');
-}
+
 
 // =============================================================================
 // SLASH COMMAND HANDLER
@@ -620,6 +614,18 @@ async function boot(): Promise<void> {
 
     if (result === 'ok') {
       rawLog('[BOOT] login() resolved — waiting for ClientReady...');
+      // Start health-check HTTP server AFTER successful login.
+      // This way Render only marks the service "Live" when Discord is connected.
+      // If running as a Background Worker, PORT is unset and this block is skipped.
+      if (PORT) {
+        const http = require('node:http') as typeof import('node:http');
+        http.createServer((req, res) => {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end(req.url === '/healthz' ? 'ok' : 'Dhaniya Sir is running\n');
+        }).listen(PORT, '0.0.0.0', () => {
+          rawLog(`[HTTP] Health server on port ${PORT}`);
+        });
+      }
       return;
     }
 
