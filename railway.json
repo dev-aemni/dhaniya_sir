@@ -12,7 +12,7 @@
     "useLegacyStacker": false,
     "ipv6EgressEnabled": false,
     "multiRegionConfig": {
-      "us-east1": {
+      "us-east4": {
         "numReplicas": 1
       }
     },
