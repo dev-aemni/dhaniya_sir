@@ -259,8 +259,11 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
 // EVENT: READY
 // =============================================================================
 client.once(Events.ClientReady, async c => {
-  console.log(`Online as ${c.user.tag}!`);
-  await registerSlashCommands(slashCommands);
+  console.log(`[READY] Online as ${c.user.tag}!`);
+  // Fire-and-forget: never block the ready event on HTTP calls
+  registerSlashCommands(slashCommands).then(r => {
+    console.log(`[CMDS] Slash sync: ${r.ok ? 'OK' : 'FAILED (non-fatal)'}`);
+  }).catch(err => console.error('[CMDS] Slash sync error:', err));
 });
 
 // =============================================================================
@@ -566,4 +569,40 @@ client.on(Events.MessageCreate, async (m: Message) => {
   }
 });
 
-client.login(TOKEN);
+// =============================================================================
+// BOOT — with timeout guard and full error handling
+// =============================================================================
+const LOGIN_TIMEOUT_MS = 30_000; // 30 s — enough for Render cold-start
+
+async function boot() {
+  console.log('[BOOT] Starting Dhaniya Sir...');
+  console.log(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT}`);
+
+  // Race login against a hard timeout so a hung WS handshake doesn't silently
+  // leave the process alive with Render thinking everything is fine
+  const loginRace = Promise.race([
+    client.login(TOKEN),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`client.login timed out after ${LOGIN_TIMEOUT_MS}ms`)), LOGIN_TIMEOUT_MS)
+    ),
+  ]);
+
+  try {
+    await loginRace;
+    console.log('[BOOT] client.login() resolved — waiting for ClientReady...');
+  } catch (err) {
+    console.error('[BOOT] FATAL: Discord login failed:', err);
+    process.exit(1); // Force Render to restart the service
+  }
+}
+
+// Catch any unhandled rejections that slip through (e.g. WS errors after login)
+process.on('unhandledRejection', (reason) => {
+  console.error('[PROCESS] Unhandled rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[PROCESS] Uncaught exception:', err);
+  process.exit(1);
+});
+
+void boot();

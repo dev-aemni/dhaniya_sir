@@ -81,18 +81,20 @@ export async function registerSlashCommands(
   commands: any[],
   preferredGuildId?: string,
 ): Promise<{ ok: boolean }> {
-  if (!CLIENT_ID) return { ok: false };
+  if (!CLIENT_ID) { console.warn('[CMDS] No CLIENT_ID set, skipping sync.'); return { ok: false }; }
   const rest = new REST({ version: '10' }).setToken(TOKEN as string);
   const guildId = preferredGuildId || GUILD_ID;
+  // 15 s timeout — prevents a slow REST call from blocking the event loop
+  const timeout = (ms: number) => new Promise<never>((_, r) => setTimeout(() => r(new Error(`REST timeout after ${ms}ms`)), ms));
   try {
     if (guildId) {
-      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: commands });
-      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+      await Promise.race([rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: commands }), timeout(15_000)]);
+      await Promise.race([rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] }), timeout(15_000)]);
     } else {
-      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+      await Promise.race([rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands }), timeout(15_000)]);
     }
     return { ok: true };
-  } catch { return { ok: false }; }
+  } catch (err) { console.error('[CMDS] REST error:', (err as Error).message); return { ok: false }; }
 }
 
 // =============================================================================
