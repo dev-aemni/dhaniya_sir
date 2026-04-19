@@ -604,8 +604,24 @@ function loginWithTimeout(): Promise<'ok' | 'timeout' | Error> {
 
 async function boot(): Promise<void> {
   rawLog('[BOOT] Starting Dhaniya Sir...');
-  rawLog(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT || '(none — Background Worker mode)'}`);
+  rawLog(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT || '(none)'}`);
   rawLog(`[BOOT] Token present: ${!!TOKEN}  CLIENT_ID: ${process.env.CLIENT_ID ?? 'unset'}`);
+
+  // Bind the HTTP health-check port FIRST, before attempting Discord login.
+  // On Render Web Service, the port must be bound quickly or Render's proxy
+  // throttles outbound TCP — which blocks Discord's WebSocket gateway.
+  if (PORT) {
+    const http = require('node:http') as typeof import('node:http');
+    await new Promise<void>((resolve) => {
+      http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(req.url === '/healthz' ? 'ok' : 'Dhaniya Sir is running\n');
+      }).listen(PORT, '0.0.0.0', () => {
+        rawLog(`[HTTP] Health server bound to port ${PORT} — starting Discord login`);
+        resolve();
+      });
+    });
+  }
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     rawLog(`[BOOT] Login attempt ${attempt}/${MAX_RETRIES}...`);
@@ -614,18 +630,6 @@ async function boot(): Promise<void> {
 
     if (result === 'ok') {
       rawLog('[BOOT] login() resolved — waiting for ClientReady...');
-      // Start health-check HTTP server AFTER successful login.
-      // This way Render only marks the service "Live" when Discord is connected.
-      // If running as a Background Worker, PORT is unset and this block is skipped.
-      if (PORT) {
-        const http = require('node:http') as typeof import('node:http');
-        http.createServer((req, res) => {
-          res.writeHead(200, { 'Content-Type': 'text/plain' });
-          res.end(req.url === '/healthz' ? 'ok' : 'Dhaniya Sir is running\n');
-        }).listen(PORT, '0.0.0.0', () => {
-          rawLog(`[HTTP] Health server on port ${PORT}`);
-        });
-      }
       return;
     }
 
