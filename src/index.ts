@@ -43,7 +43,22 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.MessageContent,
   ],
+  // Render-specific: give the WS handshake more time and allow reconnects
+  ws: {
+    large_threshold: 50,
+  },
+  rest: {
+    // Longer REST timeout for slow cold-start network on Render free tier
+    timeout: 20_000,
+  },
 });
+
+// Log WS errors and reconnects so we can see them in Render's dashboard
+client.on('error',   (err) => console.error('[WS] Client error:', err.message));
+client.on('warn',    (msg) => console.warn('[WS] Warning:', msg));
+client.on('shardDisconnect', (ev, id) => console.warn(`[WS] Shard ${id} disconnected. Code: ${ev.code}`));
+client.on('shardReconnecting', (id) => console.log(`[WS] Shard ${id} reconnecting...`));
+client.on('shardResume', (id, r) => console.log(`[WS] Shard ${id} resumed. Replayed ${r} events.`));
 
 if (PORT) {
   http.createServer((req, res) => {
@@ -131,9 +146,10 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     return void interaction.reply(`Avatar of **${user.tag}**: ${user.displayAvatarURL({ size: 1024 })}`);
   }
   if (name === 'userinfo') {
+    await interaction.deferReply();
     const user   = interaction.options.getUser('user') || interaction.user;
     const member = interaction.guild ? await interaction.guild.members.fetch(user.id).catch(() => null) : null;
-    return void interaction.reply([`User: **${user.tag}**`, `ID: \`${user.id}\``, `Created: **${user.createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} (IST)**`, `Joined: **${member?.joinedAt?.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) ?? 'Unknown'}**`].join('\n'));
+    return void interaction.editReply([`User: **${user.tag}**`, `ID: \`${user.id}\``, `Created: **${user.createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} (IST)**`, `Joined: **${member?.joinedAt?.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) ?? 'Unknown'}**`].join('\n'));
   }
   if (name === 'serverinfo') {
     if (!interaction.guild) return void interaction.reply({ content: 'Use this in a server.', flags: MessageFlags.Ephemeral });
@@ -218,33 +234,35 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     if (!interaction.guild || !(interaction.member instanceof GuildMember)) return;
     const botMember = interaction.guild.members.me;
     if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) return void interaction.reply('I need Manage Roles permission.');
+    await interaction.deferReply();
     const sub  = interaction.options.getSubcommand();
     if (sub === 'create') {
       const role = await interaction.guild.roles.create({ name: interaction.options.getString('name', true) });
-      return void interaction.reply(`Role created: ${role}`);
+      return void interaction.editReply(`Role created: ${role}`);
     }
     const roleOption = interaction.options.getRole('role', true);
     const role       = interaction.guild.roles.cache.get(roleOption.id);
-    if (!role || role.position >= botMember.roles.highest.position) return void interaction.reply('Cannot manage this role due to hierarchy.');
-    if (sub === 'del') { await role.delete(); return void interaction.reply('Deleted role.'); }
-    if (sub === 'ren') { await role.edit({ name: interaction.options.getString('name', true) }); return void interaction.reply('Renamed role.'); }
+    if (!role || role.position >= botMember.roles.highest.position) return void interaction.editReply('Cannot manage this role due to hierarchy.');
+    if (sub === 'del') { await role.delete(); return void interaction.editReply('Deleted role.'); }
+    if (sub === 'ren') { await role.edit({ name: interaction.options.getString('name', true) }); return void interaction.editReply('Renamed role.'); }
     const user   = interaction.options.getUser('user', true);
     const member = await interaction.guild.members.fetch(user.id).catch(() => null);
-    if (!member) return void interaction.reply('User not found.');
-    if (sub === 'add') { await member.roles.add(role);    return void interaction.reply(`Added ${role} to ${member.user.tag}`); }
-    if (sub === 'rem') { await member.roles.remove(role); return void interaction.reply(`Removed ${role} from ${member.user.tag}`); }
+    if (!member) return void interaction.editReply('User not found.');
+    if (sub === 'add') { await member.roles.add(role);    return void interaction.editReply(`Added ${role} to ${member.user.tag}`); }
+    if (sub === 'rem') { await member.roles.remove(role); return void interaction.editReply(`Removed ${role} from ${member.user.tag}`); }
     return;
   }
 
   if (['kick', 'ban', 'timeout', 'mute', 'untimeout', 'unmute'].includes(name)) {
     if (!interaction.guild || !(interaction.member instanceof GuildMember)) return;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const user   = interaction.options.getUser('user', true);
     const member = await interaction.guild.members.fetch(user.id).catch(() => null);
     const params: any = {
       action:          name === 'mute' ? 'timeout' : name === 'unmute' ? 'untimeout' : name,
       moderatorMember: interaction.member, targetMember: member, targetUser: user,
       reason:          interaction.options.getString('reason') || undefined,
-      reply:           async (msg: string) => void interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }),
+      reply:           async (msg: string) => void interaction.editReply({ content: msg }),
     };
     if (name === 'ban') params.deleteDays = interaction.options.getInteger('delete_days') || 0;
     if (name === 'timeout' || name === 'mute') {
@@ -572,36 +590,61 @@ client.on(Events.MessageCreate, async (m: Message) => {
 // =============================================================================
 // BOOT — with timeout guard and full error handling
 // =============================================================================
-const LOGIN_TIMEOUT_MS = 30_000; // 30 s — enough for Render cold-start
+// =============================================================================
+// BOOT — retry with backoff so a single Render network hiccup doesn't loop
+// =============================================================================
+const MAX_RETRIES     = 5;
+const BASE_DELAY_MS   = 5_000;   // 5 s initial wait between retries
+const LOGIN_TIMEOUT_MS = 60_000; // 60 s per attempt (Render cold-start can be slow)
+
+async function tryLogin(attempt: number): Promise<void> {
+  console.log(`[BOOT] Login attempt ${attempt}/${MAX_RETRIES}...`);
+
+  // Destroy any stale WS from a previous failed attempt
+  try { client.destroy(); } catch { /* ignore */ }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Timed out after ${LOGIN_TIMEOUT_MS}ms`));
+    }, LOGIN_TIMEOUT_MS);
+
+    client.login(TOKEN)
+      .then(() => { clearTimeout(timer); resolve(); })
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+}
 
 async function boot() {
   console.log('[BOOT] Starting Dhaniya Sir...');
   console.log(`[BOOT] NODE_ENV=${process.env.NODE_ENV ?? 'unset'}  PORT=${PORT}`);
 
-  // Race login against a hard timeout so a hung WS handshake doesn't silently
-  // leave the process alive with Render thinking everything is fine
-  const loginRace = Promise.race([
-    client.login(TOKEN),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`client.login timed out after ${LOGIN_TIMEOUT_MS}ms`)), LOGIN_TIMEOUT_MS)
-    ),
-  ]);
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await tryLogin(attempt);
+      console.log('[BOOT] client.login() resolved — waiting for ClientReady event...');
+      return; // success — rest of the bot runs via event handlers
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[BOOT] Attempt ${attempt} failed: ${msg}`);
 
-  try {
-    await loginRace;
-    console.log('[BOOT] client.login() resolved — waiting for ClientReady...');
-  } catch (err) {
-    console.error('[BOOT] FATAL: Discord login failed:', err);
-    process.exit(1); // Force Render to restart the service
+      if (attempt === MAX_RETRIES) {
+        console.error('[BOOT] All retries exhausted. Exiting so Render can restart the service.');
+        process.exit(1);
+      }
+
+      const delay = BASE_DELAY_MS * attempt; // 5s, 10s, 15s, 20s
+      console.log(`[BOOT] Retrying in ${delay / 1000}s...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
 }
 
-// Catch any unhandled rejections that slip through (e.g. WS errors after login)
+// Surface any WS errors that occur after successful login
 process.on('unhandledRejection', (reason) => {
   console.error('[PROCESS] Unhandled rejection:', reason);
 });
 process.on('uncaughtException', (err) => {
-  console.error('[PROCESS] Uncaught exception:', err);
+  console.error('[PROCESS] Uncaught exception:', err.message);
   process.exit(1);
 });
 
