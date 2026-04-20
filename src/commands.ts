@@ -145,5 +145,11 @@ export const slashCommands = [
     .setDescription('Alias of /untimeout.')
     .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
     .addStringOption(o => o.setName('reason').setDescription('Reason for unmute'))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
+  new SlashCommandBuilder()
+    .setName('set')
+    .setDescription('Bot configuration')
+    .addSubcommand(s => s.setName('controller').setDescription('Set controller roles')
+      .addStringOption(o => o.setName('role').setDescription('Role IDs or mentions separated by commas').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(command => command.toJSON());

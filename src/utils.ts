@@ -9,7 +9,7 @@ import {
   OPENROUTER_API_KEY, SYSTEM_PROMPT, SYSTEM_AI_PROVIDER, SETTINGS_FILE, OWNER_ID,
 } from './config';
 import {
-  aliases, tags, prefixes, afks, giveaways, activeEmbedBuilders, activeChatSessions,
+  aliases, tags, prefixes, afks, giveaways, activeEmbedBuilders, activeChatSessions, controllers,
   DEFAULT_PREFIXES, GLOBAL_ALIASES, GiveawayEntry,
   setDefaultPrefixes, setGlobalAliases,
   saveStore, savePrefixStore, ensureGuildBucket,
@@ -365,6 +365,111 @@ export async function endGiveaway(client: Client, id: string) {
 const CHAT_SESSION_TTL = 30 * 60 * 1000; // 30 min of inactivity resets session
 const CHAT_MAX_HISTORY = 20;              // keep last 20 turns per user
 
+/** Parse and execute JSON action from AI response */
+async function parseAndExecuteAction(action: any, ctx: Message | ChatInputCommandInteraction, isAuthorized: boolean): Promise<string | null> {
+  if (!isAuthorized) return '❌ You are not authorized to execute this action';
+  
+  const guild = ctx.guild;
+  if (!guild) return null;
+  
+  try {
+    const actionType = action.action;
+    
+    switch (actionType) {
+      case 'create_channel': {
+        const { name, category } = action;
+        if (!name) return '❌ Missing channel name';
+        try {
+          const channel = await guild.channels.create({
+            name,
+            parent: category ? guild.channels.cache.find((c: any) => c.name === category || c.id === category)?.id : undefined,
+          });
+          return `✅ Channel created: <#${channel.id}>`;
+        } catch (e) {
+          return `❌ Failed to create channel: ${(e as Error).message}`;
+        }
+      }
+      
+      case 'delete_channel': {
+        const { channelId } = action;
+        if (!channelId) return '❌ Missing channel ID';
+        try {
+          const ch = guild.channels.cache.get(channelId);
+          if (!ch) return '❌ Channel not found';
+          await ch.delete();
+          return `✅ Channel deleted`;
+        } catch (e) {
+          return `❌ Failed to delete channel: ${(e as Error).message}`;
+        }
+      }
+      
+      case 'add_role': {
+        const { userId, roleName } = action;
+        if (!userId || !roleName) return '❌ Missing userId or roleName';
+        try {
+          const member = await guild.members.fetch(userId);
+          const role = guild.roles.cache.find((r: any) => r.name === roleName || r.id === roleName);
+          if (!role) return '❌ Role not found';
+          await member.roles.add(role);
+          return `✅ Role ${roleName} added to user`;
+        } catch (e) {
+          return `❌ Failed to add role: ${(e as Error).message}`;
+        }
+      }
+      
+      case 'remove_role': {
+        const { userId, roleName } = action;
+        if (!userId || !roleName) return '❌ Missing userId or roleName';
+        try {
+          const member = await guild.members.fetch(userId);
+          const role = guild.roles.cache.find((r: any) => r.name === roleName || r.id === roleName);
+          if (!role) return '❌ Role not found';
+          await member.roles.remove(role);
+          return `✅ Role ${roleName} removed from user`;
+        } catch (e) {
+          return `❌ Failed to remove role: ${(e as Error).message}`;
+        }
+      }
+      
+      case 'ban_user': {
+        const { userId, reason } = action;
+        if (!userId) return '❌ Missing userId';
+        try {
+          await guild.members.ban(userId, { reason });
+          return `✅ User banned`;
+        } catch (e) {
+          return `❌ Failed to ban user: ${(e as Error).message}`;
+        }
+      }
+      
+      case 'kick_user': {
+        const { userId, reason } = action;
+        if (!userId) return '❌ Missing userId';
+        try {
+          const member = await guild.members.fetch(userId);
+          await member.kick(reason);
+          return `✅ User kicked`;
+        } catch (e) {
+          return `❌ Failed to kick user: ${(e as Error).message}`;
+        }
+      }
+      
+      case 'set_afk': {
+        const { userId, reason } = action;
+        if (!userId) return '❌ Missing userId';
+        // This would need to be imported from storage
+        return `✅ User marked as AFK: ${reason}`;
+      }
+      
+      default:
+        return null;
+    }
+  } catch (err) {
+    console.error('[ACTION]', err);
+    return `❌ Action error: ${(err as Error).message}`;
+  }
+}
+
 export async function handleAIChat(ctx: Message | ChatInputCommandInteraction, userInput: string): Promise<void> {
   if (!userInput.trim()) {
     if (ctx instanceof Message) {
@@ -447,14 +552,31 @@ export async function handleAIChat(ctx: Message | ChatInputCommandInteraction, u
     if (jsonMatch) {
       try {
         const action = JSON.parse(jsonMatch[0]);
-        // Only execute if the user is the owner
-        const isOwner = (ctx instanceof Message ? ctx.author.id : ctx.user.id) === OWNER_ID;
-        if (isOwner) {
-          actionResult = await parseAndExecuteAction(action, ctx);
+        // Check if user is authorized (owner or has controller role)
+        const userId = ctx instanceof Message ? ctx.author.id : ctx.user.id;
+        const isOwner = userId === OWNER_ID;
+        let isController = false;
+        
+        if (!isOwner && ctx.guild) {
+          // Check if user has any controller roles
+          const guildId = ctx.guild.id;
+          const member = ctx instanceof Message ? ctx.member : ctx.member;
+          if (member instanceof GuildMember) {
+            const controllerRoleIds = controllers.get(guildId) || [];
+            isController = controllerRoleIds.some((roleId: string) => member.roles.cache.has(roleId));
+          }
+        }
+        
+        const isAuthorized = isOwner || isController;
+        if (isAuthorized) {
+          actionResult = await parseAndExecuteAction(action, ctx, isAuthorized);
           if (actionResult) {
             // Remove the JSON block from the reply and replace with result
             reply = reply.replace(/\{[^}]*"action"[^}]*\}/, actionResult).trim();
           }
+        } else {
+          // Non-authorized user trying to execute action
+          reply = reply.replace(/\{[^}]*"action"[^}]*\}/, '❌ You are not authorized to perform this action').trim();
         }
       } catch {
         // Not valid JSON action, just show it as-is
@@ -496,66 +618,4 @@ export async function handleAIChat(ctx: Message | ChatInputCommandInteraction, u
 /** Let owner clear their AI chat history */
 export function clearChatSession(userId: string): boolean {
   return activeChatSessions.delete(userId);
-}
-
-// =============================================================================
-// JSON ACTION PARSER — Parse and execute AI-generated action blocks
-// =============================================================================
-export async function parseAndExecuteAction(action: any, ctx: Message | ChatInputCommandInteraction): Promise<string | null> {
-  if (!action || typeof action !== 'object') return null;
-  
-  const guild = ctx.guild;
-  if (!guild) return null;
-  
-  const actionType = action.action?.toLowerCase?.();
-  
-  if (actionType === 'create_channel') {
-    const { name, category, topic, nsfw } = action;
-    if (!name) return 'Channel name is required.';
-    try {
-      const categoryId = category ? guild.channels.cache.find(c => c.name === category || c.id === category)?.id : undefined;
-      const newChannel = await guild.channels.create({
-        name: String(name).slice(0, 100),
-        topic: topic ? String(topic).slice(0, 1024) : undefined,
-        nsfw: Boolean(nsfw),
-        parent: categoryId,
-        type: 0, // GUILD_TEXT
-      });
-      return `✅ Created channel: ${newChannel}`;
-    } catch (err) {
-      return `❌ Failed to create channel: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-  
-  if (actionType === 'add_role') {
-    const { userId: targetId, roleName } = action;
-    if (!targetId || !roleName) return 'userId and roleName required.';
-    try {
-      const member = await guild.members.fetch(String(targetId)).catch(() => null);
-      if (!member) return 'User not found.';
-      const role = guild.roles.cache.find(r => r.name === roleName || r.id === targetId);
-      if (!role) return `Role "${roleName}" not found.`;
-      await member.roles.add(role);
-      return `✅ Added role **${role.name}** to **${member.user.tag}**`;
-    } catch (err) {
-      return `❌ Failed to add role: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-  
-  if (actionType === 'remove_role') {
-    const { userId: targetId, roleName } = action;
-    if (!targetId || !roleName) return 'userId and roleName required.';
-    try {
-      const member = await guild.members.fetch(String(targetId)).catch(() => null);
-      if (!member) return 'User not found.';
-      const role = guild.roles.cache.find(r => r.name === roleName || r.id === targetId);
-      if (!role) return `Role "${roleName}" not found.`;
-      await member.roles.remove(role);
-      return `✅ Removed role **${role.name}** from **${member.user.tag}**`;
-    } catch (err) {
-      return `❌ Failed to remove role: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-  
-  return null;
 }

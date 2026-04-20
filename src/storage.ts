@@ -8,6 +8,7 @@ export type GuildTextStore = Record<string, TextStore>;
 export type PrefixStore    = Record<string, string>;
 export type AfkStore       = Record<string, { reason: string; time: number }>;
 export type ActiveChat     = { history: { role: 'user'|'assistant'; content: string }[]; lastActivity: number };
+export type ControllerStore = Record<string, string[]>; // guildId -> roleIds[]
 export type GiveawayEntry  = {
   messageId: string; guildId: string; channelId: string; title: string;
   hostName: string; winnersCount: number; endAt: number;
@@ -75,6 +76,19 @@ export function loadAfkStore(filePath: string): AfkStore {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')) as AfkStore; } catch { return {}; }
 }
 
+export function loadControllerStore(filePath: string): ControllerStore {
+  ensureStore(filePath);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+    if (typeof parsed !== 'object' || !parsed) return {};
+    const result: ControllerStore = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (Array.isArray(v)) result[k] = v.filter(id => typeof id === 'string' && id.trim());
+    }
+    return result;
+  } catch { return {}; }
+}
+
 export function saveStore(filePath: string, store: any): void {
   fs.writeFileSync(filePath, JSON.stringify(store, null, 2), 'utf8');
 }
@@ -91,6 +105,7 @@ export const aliases              = loadGuildTextStore(ALIAS_FILE);
 export const tags                 = loadGuildTextStore(TAG_FILE);
 export const prefixes             = loadPrefixStore(SETTINGS_FILE);
 export const afks                 = loadAfkStore(AFK_FILE);
+export const controllers          = new Map<string, string[]>(); // guildId -> roleIds[]
 export const giveaways            = new Map<string, GiveawayEntry>();
 export const activeEmbedBuilders  = new Map<string, {
   embed: EmbedBuilder; buttons: ButtonBuilder[]; botMsg: Message;

@@ -8,11 +8,11 @@ import {
 } from 'discord.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
-import { PORT, TOKEN, OWNER_ID, SETTINGS_FILE, TAG_FILE, ALIAS_FILE, AFK_FILE } from './config';
+import { PORT, TOKEN, OWNER_ID, SETTINGS_FILE, TAG_FILE, ALIAS_FILE, AFK_FILE, CONTROLLER_FILE } from './config';
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 import {
-  afks, tags, aliases, giveaways, activeEmbedBuilders,
+  afks, tags, aliases, giveaways, activeEmbedBuilders, controllers,
   saveStore, savePrefixStore, ensureGuildBucket, prefixes,
   DEFAULT_PREFIXES, GLOBAL_ALIASES,
   setDefaultPrefixes, setGlobalAliases, GiveawayEntry,
@@ -201,6 +201,29 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     const message = interaction.options.getString('message', true);
     await interaction.deferReply();
     await handleAIChat(interaction, message);
+    return;
+  }
+
+  if (name === 'set' && interaction.guildId) {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'controller') {
+      const roleInput = interaction.options.getString('role', true);
+      // Parse role mentions or IDs from input: "@role1, @role2" or "123,456,789"
+      const roleIds = roleInput.split(',').map(r => {
+        let id = r.trim();
+        // Remove <@& and > from role mentions
+        if (id.startsWith('<@&') && id.endsWith('>')) id = id.slice(3, -1);
+        return id;
+      }).filter(id => id.length > 0);
+      
+      if (roleIds.length === 0) return void interaction.reply({ content: 'Please provide at least one valid role ID or mention.', flags: MessageFlags.Ephemeral });
+      
+      controllers.set(interaction.guildId, roleIds);
+      const fs = require('node:fs');
+      const allControllers = Object.fromEntries(controllers);
+      fs.writeFileSync(CONTROLLER_FILE, JSON.stringify(allControllers, null, 2), 'utf8');
+      return void interaction.reply({ content: `✅ Controller roles updated: ${roleIds.map(id => `<@&${id}>`).join(', ')}`, flags: MessageFlags.Ephemeral });
+    }
     return;
   }
 

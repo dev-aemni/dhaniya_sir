@@ -20,8 +20,9 @@ export const SYSTEM_AI_PROVIDER = process.env.system_AI  || 'google/gemini-2.0-f
 if (!TOKEN) throw new Error('Missing TOKEN in .env');
 
 // ── Data paths ────────────────────────────────────────────────────────────────
-export const DATA_DIR      = process.env.RENDER_DISK_MOUNT_PATH || path.join(process.cwd(), 'data');
-export const ALIAS_FILE    = path.join(DATA_DIR, 'aliases.json');
-export const TAG_FILE      = path.join(DATA_DIR, 'tags.json');
-export const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-export const AFK_FILE      = path.join(DATA_DIR, 'afk.json');
+export const DATA_DIR        = process.env.RENDER_DISK_MOUNT_PATH || path.join(process.cwd(), 'data');
+export const ALIAS_FILE      = path.join(DATA_DIR, 'aliases.json');
+export const TAG_FILE        = path.join(DATA_DIR, 'tags.json');
+export const SETTINGS_FILE   = path.join(DATA_DIR, 'settings.json');
+export const AFK_FILE        = path.join(DATA_DIR, 'afk.json');
+export const CONTROLLER_FILE = path.join(DATA_DIR, 'controllers.json');
