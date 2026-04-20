@@ -1,4 +1,32 @@
-start .\makeonline.bat
+start cmd /c ".\makeonline.bat"
 pause
-start .\makeoffline.bat
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
+pause
+start cmd /c ".\makeonline.bat"
 pause
