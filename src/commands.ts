@@ -151,5 +151,38 @@ export const slashCommands = [
     .setDescription('Bot configuration')
     .addSubcommand(s => s.setName('controller').setDescription('Set controller roles')
       .addStringOption(o => o.setName('role').setDescription('Role IDs or mentions separated by commas').setRequired(true)))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
+    .setName('welcome')
+    .setDescription('Welcome system setup and control')
+    .addSubcommand(s => s.setName('setup').setDescription('Set welcome channel and message')
+      .addChannelOption(o => o.setName('channel').setDescription('Welcome channel').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+      .addStringOption(o => o.setName('message').setDescription('Welcome message. Use {user} {server} {membercount}').setRequired(true)))
+    .addSubcommand(s => s.setName('preview').setDescription('Preview welcome message'))
+    .addSubcommand(s => s.setName('test').setDescription('Send a test welcome message'))
+    .addSubcommand(s => s.setName('toggle').setDescription('Enable/disable welcome messages')
+      .addBooleanOption(o => o.setName('enabled').setDescription('Welcome system on/off').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('ticket')
+    .setDescription('Ticket system')
+    .addSubcommand(s => s.setName('setup').setDescription('Create ticket panel')
+      .addChannelOption(o => o.setName('channel').setDescription('Panel channel').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+      .addChannelOption(o => o.setName('category').setDescription('Category where tickets are created').addChannelTypes(ChannelType.GuildCategory).setRequired(true)))
+    .addSubcommand(s => s.setName('claim').setDescription('Claim current ticket'))
+    .addSubcommand(s => s.setName('close').setDescription('Close current ticket')
+      .addStringOption(o => o.setName('reason').setDescription('Close reason')))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
+  new SlashCommandBuilder()
+    .setName('automod')
+    .setDescription('Basic automod rules')
+    .addSubcommand(s => s.setName('toggle').setDescription('Toggle a rule')
+      .addStringOption(o => o.setName('rule').setDescription('Rule').setRequired(true).addChoices(
+        { name: 'Anti Link', value: 'anti_link' },
+        { name: 'Anti Invite', value: 'anti_invite' },
+        { name: 'Anti Spam', value: 'anti_spam' },
+      ))
+      .addBooleanOption(o => o.setName('enabled').setDescription('On/off').setRequired(true)))
+    .addSubcommand(s => s.setName('view').setDescription('View automod config'))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 ].map(command => command.toJSON());

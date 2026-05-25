@@ -4,8 +4,12 @@ dist
 dhnaiya_sir/
 dhnaiya_sir/*.txt
 dhnaiya_sir/*.zip
-*.remindme
+.remindme
 tempCodeRunnerFile.bat
 desktop.ini
 *.log
 install.cmd
+todo
+**.txt
+git.bat
+*.ps1

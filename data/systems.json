@@ -1,0 +1,9 @@
+{
+  "1492083588680912906": {
+    "welcome": {
+      "enabled": true,
+      "channelId": "1492083590815547398",
+      "message": "Welcome {user} to {server}, You are the {membercount}th member!"
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'node:fs';
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   ChatInputCommandInteraction, Client, EmbedBuilder,
@@ -8,7 +9,9 @@ import {
 } from 'discord.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
-import { PORT, TOKEN, OWNER_ID, SETTINGS_FILE, TAG_FILE, ALIAS_FILE, AFK_FILE, CONTROLLER_FILE } from './config';
+import { PORT, TOKEN, OWNER_ID, SETTINGS_FILE, TAG_FILE, ALIAS_FILE, AFK_FILE, CONTROLLER_FILE, DATA_DIR } from './config';
+import { startPresenceRotation } from './systems/presence';
+import { OK, NO } from './systems/emoji';
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 import {
@@ -43,6 +46,54 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
 });
+
+type WelcomeCfg = { enabled: boolean; channelId: string; message: string };
+type TicketCfg = { panelChannelId: string; categoryId: string; panelMessageId?: string };
+type AutomodCfg = { anti_link: boolean; anti_invite: boolean; anti_spam: boolean };
+type TicketEntry = { channelId: string; ownerId: string; claimedBy?: string; createdAt: number; closed: boolean };
+type GuildSystems = { welcome?: WelcomeCfg; ticket?: TicketCfg; automod?: AutomodCfg; tickets?: Record<string, TicketEntry> };
+type SystemsStore = Record<string, GuildSystems>;
+
+const SYSTEMS_FILE = `${DATA_DIR}/systems.json`;
+function loadSystems(): SystemsStore {
+  try { return JSON.parse(fs.readFileSync(SYSTEMS_FILE, 'utf8')) as SystemsStore; } catch { return {}; }
+}
+function saveSystems(store: SystemsStore): void {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(SYSTEMS_FILE, JSON.stringify(store, null, 2), 'utf8');
+}
+const systems = loadSystems();
+function guildSystems(guildId: string): GuildSystems {
+  if (!systems[guildId]) systems[guildId] = {};
+  return systems[guildId];
+}
+function renderWelcome(tpl: string, m: GuildMember): string {
+  return tpl
+    .replace(/\{user\}/gi, `<@${m.id}>`)
+    .replace(/\{server\}/gi, m.guild.name)
+    .replace(/\{membercount\}/gi, String(m.guild.memberCount))
+    .replace(/\{created\}/gi, m.user.createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }));
+}
+function statusEmbed(kind: 'ok' | 'no' | 'info', title: string, description: string) {
+  const color = kind === 'ok' ? 0x57f287 : kind === 'no' ? 0xed4245 : 0x5865f2;
+  const icon = kind === 'ok' ? OK : kind === 'no' ? NO : 'ℹ️';
+  return new EmbedBuilder().setColor(color).setTitle(`${icon} ${title}`).setDescription(description).setTimestamp();
+}
+function makeWelcomeEmbed(member: GuildMember, tpl: string) {
+  const text = renderWelcome(tpl, member);
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`${OK} Welcome to ${member.guild.name}`)
+    .setDescription(text)
+    .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+    .addFields(
+      { name: 'Member', value: `<@${member.id}>`, inline: true },
+      { name: 'Count', value: `${member.guild.memberCount}`, inline: true },
+      { name: 'Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
+    )
+    .setFooter({ text: `User ID: ${member.id}` })
+    .setTimestamp();
+}
 
 // WS diagnostics — visible in Render's log dashboard
 client.on('error',           (err)    => console.error('[WS] Error:', err.message));
@@ -222,9 +273,98 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
       const fs = require('node:fs');
       const allControllers = Object.fromEntries(controllers);
       fs.writeFileSync(CONTROLLER_FILE, JSON.stringify(allControllers, null, 2), 'utf8');
-      return void interaction.reply({ content: `✅ Controller roles updated: ${roleIds.map(id => `<@&${id}>`).join(', ')}`, flags: MessageFlags.Ephemeral });
+      return void interaction.reply({ content: `${OK} Controller roles updated: ${roleIds.map(id => `<@&${id}>`).join(', ')}`, flags: MessageFlags.Ephemeral });
     }
     return;
+  }
+
+  if (name === 'welcome' && interaction.guildId && interaction.guild) {
+    const sub = interaction.options.getSubcommand();
+    const gs = guildSystems(interaction.guildId);
+    if (sub === 'setup') {
+      const channel = interaction.options.getChannel('channel', true);
+      const message = interaction.options.getString('message', true);
+      gs.welcome = { enabled: true, channelId: channel.id, message };
+      saveSystems(systems);
+      return void interaction.reply({ embeds: [statusEmbed('ok', 'Welcome Configured', `Channel: <#${channel.id}>\nMessage saved successfully.`)], flags: MessageFlags.Ephemeral });
+    }
+    if (!gs.welcome) return void interaction.reply({ embeds: [statusEmbed('no', 'Welcome Not Configured', 'Run `/welcome setup` first.')], flags: MessageFlags.Ephemeral });
+    if (sub === 'toggle') {
+      const enabled = interaction.options.getBoolean('enabled', true);
+      gs.welcome.enabled = enabled;
+      saveSystems(systems);
+      return void interaction.reply({ embeds: [statusEmbed('ok', 'Welcome Updated', `Welcome is now **${enabled ? 'enabled' : 'disabled'}**.`)], flags: MessageFlags.Ephemeral });
+    }
+    const member = interaction.member instanceof GuildMember ? interaction.member : null;
+    if (!member) return void interaction.reply({ embeds: [statusEmbed('no', 'Invalid Context', 'Use this command in a server.')], flags: MessageFlags.Ephemeral });
+    if (sub === 'preview') return void interaction.reply({ embeds: [makeWelcomeEmbed(member, gs.welcome.message)], flags: MessageFlags.Ephemeral });
+    if (sub === 'test') {
+      const ch = await interaction.guild.channels.fetch(gs.welcome.channelId).catch(() => null) as any;
+      if (!ch) return void interaction.reply({ embeds: [statusEmbed('no', 'Welcome Channel Missing', 'Configured welcome channel was not found.')], flags: MessageFlags.Ephemeral });
+      await sendToChannel(ch, { embeds: [makeWelcomeEmbed(member, gs.welcome.message)] });
+      return void interaction.reply({ embeds: [statusEmbed('ok', 'Test Sent', `Test welcome sent in <#${gs.welcome.channelId}>.`)], flags: MessageFlags.Ephemeral });
+    }
+  }
+
+  if (name === 'automod' && interaction.guildId) {
+    const sub = interaction.options.getSubcommand();
+    const gs = guildSystems(interaction.guildId);
+    if (!gs.automod) gs.automod = { anti_link: false, anti_invite: false, anti_spam: false };
+    if (sub === 'toggle') {
+      const rule = interaction.options.getString('rule', true) as keyof AutomodCfg;
+      const enabled = interaction.options.getBoolean('enabled', true);
+      gs.automod[rule] = enabled;
+      saveSystems(systems);
+      return void interaction.reply({ embeds: [statusEmbed('ok', 'Automod Updated', `Rule \`${rule}\` is now **${enabled ? 'enabled' : 'disabled'}**.`)], flags: MessageFlags.Ephemeral });
+    }
+    return void interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle('⚙️ Automod Config')
+          .setDescription('Current automod status for this server.')
+          .addFields(
+            { name: 'Anti Link', value: gs.automod.anti_link ? `${OK} Enabled` : `${NO} Disabled`, inline: true },
+            { name: 'Anti Invite', value: gs.automod.anti_invite ? `${OK} Enabled` : `${NO} Disabled`, inline: true },
+            { name: 'Anti Spam', value: gs.automod.anti_spam ? `${OK} Enabled` : `${NO} Disabled`, inline: true },
+          )
+          .setTimestamp(),
+      ],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (name === 'ticket' && interaction.guildId && interaction.guild) {
+    const sub = interaction.options.getSubcommand();
+    const gs = guildSystems(interaction.guildId);
+    gs.tickets = gs.tickets || {};
+    if (sub === 'setup') {
+      const panelChannel = interaction.options.getChannel('channel', true);
+      const category = interaction.options.getChannel('category', true);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('ticket_open').setLabel('Open Ticket').setStyle(ButtonStyle.Primary),
+      );
+      const sent = await sendToChannel(panelChannel, { content: 'Need help? Click to open a ticket.', components: [row] });
+      gs.ticket = { panelChannelId: panelChannel.id, categoryId: category.id, panelMessageId: sent?.id };
+      saveSystems(systems);
+      return void interaction.reply({ embeds: [statusEmbed('ok', 'Ticket Panel Created', `Panel posted in <#${panelChannel.id}>.`)], flags: MessageFlags.Ephemeral });
+    }
+    const ticket = Object.values(gs.tickets).find(t => t.channelId === interaction.channelId && !t.closed);
+    if (!ticket) return void interaction.reply({ embeds: [statusEmbed('no', 'Not a Ticket Channel', 'This channel is not an active ticket.')], flags: MessageFlags.Ephemeral });
+    if (sub === 'claim') {
+      ticket.claimedBy = interaction.user.id;
+      saveSystems(systems);
+      return void interaction.reply({ embeds: [statusEmbed('ok', 'Ticket Claimed', `Claimed by <@${interaction.user.id}>.`)] });
+    }
+    if (sub === 'close') {
+      const reason = interaction.options.getString('reason') || 'No reason provided';
+      ticket.closed = true;
+      saveSystems(systems);
+      await interaction.reply({ embeds: [statusEmbed('info', 'Closing Ticket', `Reason: ${reason}`)] });
+      const ch = interaction.channel as any;
+      setTimeout(() => ch?.delete?.(`Ticket closed: ${reason}`).catch(() => null), 2000);
+      return;
+    }
   }
 
   if (name === 'purge') {
@@ -294,9 +434,19 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
 // =============================================================================
 client.once(Events.ClientReady, async c => {
   process.stdout.write(`[READY] Online as ${c.user.tag}!\n`);
+  startPresenceRotation(client);
   registerSlashCommands(slashCommands).then(r => {
     process.stdout.write(`[CMDS] Slash sync: ${r.ok ? 'OK' : 'FAILED (non-fatal)'}\n`);
   }).catch(err => process.stderr.write(`[CMDS] Slash sync error: ${err}\n`));
+});
+
+client.on(Events.GuildMemberAdd, async (member) => {
+  const gs = systems[member.guild.id];
+  const w = gs?.welcome;
+  if (!w?.enabled) return;
+  const ch = await member.guild.channels.fetch(w.channelId).catch(() => null) as any;
+  if (!ch) return;
+  await sendToChannel(ch, { embeds: [makeWelcomeEmbed(member, w.message)] });
 });
 
 // =============================================================================
@@ -305,6 +455,33 @@ client.once(Events.ClientReady, async c => {
 client.on(Events.InteractionCreate, async i => {
   try {
     if (i.isChatInputCommand()) return void handleSlash(i);
+    if (i.isButton() && i.customId === 'ticket_open' && i.guildId && i.guild) {
+      const gs = guildSystems(i.guildId);
+      if (!gs.ticket) return void i.reply({ embeds: [statusEmbed('no', 'Ticket Not Configured', 'Run `/ticket setup` first.')], flags: MessageFlags.Ephemeral });
+      gs.tickets = gs.tickets || {};
+      const existing = Object.values(gs.tickets).find(t => t.ownerId === i.user.id && !t.closed);
+      if (existing) return void i.reply({ embeds: [statusEmbed('no', 'Ticket Already Open', `You already have one: <#${existing.channelId}>`)], flags: MessageFlags.Ephemeral });
+      const created = await i.guild.channels.create({
+        name: `ticket-${i.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 28),
+        parent: gs.ticket.categoryId,
+      });
+      gs.tickets[created.id] = { channelId: created.id, ownerId: i.user.id, createdAt: Date.now(), closed: false };
+      saveSystems(systems);
+      await sendToChannel(created, {
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setTitle('🎫 Support Ticket')
+            .setDescription(`Hello <@${i.user.id}>. Our team will assist you shortly.`)
+            .addFields(
+              { name: 'Commands', value: '`/ticket claim` • `/ticket close`' },
+              { name: 'Opened By', value: `<@${i.user.id}>`, inline: true },
+            )
+            .setTimestamp(),
+        ],
+      });
+      return void i.reply({ embeds: [statusEmbed('ok', 'Ticket Created', `Your ticket: <#${created.id}>`)], flags: MessageFlags.Ephemeral });
+    }
 
     // ── Embed Builder Buttons ──────────────────────────────────────────────
     if (i.isButton() && i.customId.startsWith('emb_')) {
@@ -385,6 +562,29 @@ client.on(Events.InteractionCreate, async i => {
 // =============================================================================
 client.on(Events.MessageCreate, async (m: Message) => {
   if (m.author.bot) return;
+  if (m.guildId) {
+    const gs = systems[m.guildId];
+    const am = gs?.automod;
+    if (am) {
+      const content = m.content.toLowerCase();
+      if (am.anti_link && /(https?:\/\/[^\s]+)/i.test(content)) {
+        await m.delete().catch(() => null);
+        const warn = await sendToChannel(m.channel, {
+          embeds: [statusEmbed('no', 'Message Removed', `${m.author}, links are not allowed in this channel.`)],
+        });
+        if (warn?.deletable) setTimeout(() => warn.delete().catch(() => null), 4000);
+        return;
+      }
+      if (am.anti_invite && /(discord\.gg\/|discord\.com\/invite\/)/i.test(content)) {
+        await m.delete().catch(() => null);
+        const warn = await sendToChannel(m.channel, {
+          embeds: [statusEmbed('no', 'Message Removed', `${m.author}, invite links are blocked in this server.`)],
+        });
+        if (warn?.deletable) setTimeout(() => warn.delete().catch(() => null), 4000);
+        return;
+      }
+    }
+  }
 
   // AFK: welcome back
   if (afks[m.author.id]) {
@@ -463,20 +663,20 @@ client.on(Events.MessageCreate, async (m: Message) => {
       const output  = args.join(' ').trim();
       if (!trigger || !output) return void m.reply(`Usage: \`${prefix}exec_alias_global_set <trigger> <output>\``).catch(() => null);
       GLOBAL_ALIASES[trigger] = output; setGlobalAliases({ ...GLOBAL_ALIASES }); savePrefixStore(SETTINGS_FILE, prefixes);
-      return void m.reply(`✅ Global alias set: **${trigger}**`).catch(() => null);
+      return void m.reply(`${OK} Global alias set: **${trigger}**`).catch(() => null);
     }
     // ds-exec_alias_global_del <trigger>
     if (cmd === 'exec_alias_global_del') {
       const trigger = sanitizeKey(args.shift() || '');
       if (!trigger || !GLOBAL_ALIASES[trigger]) return void m.reply('Alias not found.').catch(() => null);
       delete GLOBAL_ALIASES[trigger]; setGlobalAliases({ ...GLOBAL_ALIASES }); savePrefixStore(SETTINGS_FILE, prefixes);
-      return void m.reply(`✅ Removed global alias: **${trigger}**`).catch(() => null);
+      return void m.reply(`${OK} Removed global alias: **${trigger}**`).catch(() => null);
     }
     // ds-exec_set_prefixes <p1> <p2> ...
     if (cmd === 'exec_set_prefixes') {
       if (args.length === 0) return void m.reply('Provide at least one prefix.').catch(() => null);
       setDefaultPrefixes(args); savePrefixStore(SETTINGS_FILE, prefixes);
-      return void m.reply(`✅ Global prefixes: \`${args.join('`, `')}\``).catch(() => null);
+      return void m.reply(`${OK} Global prefixes: \`${args.join('`, `')}\``).catch(() => null);
     }
     // ds-exec_say <#channel|channelId> <text>
     if (cmd === 'exec_say') {
@@ -494,20 +694,20 @@ client.on(Events.MessageCreate, async (m: Message) => {
       const amt = parseInt(args[0] || '100');
       if (m.deletable) await m.delete().catch(() => null);
       const res = await executePurge(m.channel, isNaN(amt) ? 100 : amt, {});
-      const r = await sendToChannel(m.channel, `✅ Purged ${res.deleted} messages.`) as Message;
+      const r = await sendToChannel(m.channel, `${OK} Purged ${res.deleted} messages.`) as Message;
       if (r) setTimeout(() => r.delete().catch(() => null), 4000);
       return;
     }
     // ds-exec_chat_clear — wipe your own AI session
     if (cmd === 'exec_chat_clear') {
       clearChatSession(m.author.id);
-      return void m.reply('✅ Your AI chat history has been cleared.').catch(() => null);
+      return void m.reply(`${OK} Your AI chat history has been cleared.`).catch(() => null);
     }
     // ds-exec_reload — re-register slash commands globally
     if (cmd === 'exec_reload') {
       await m.reply('⏳ Syncing slash commands...').catch(() => null);
       const result = await registerSlashCommands(slashCommands, m.guildId || undefined);
-      return void m.reply(result.ok ? '✅ Commands synced!' : '❌ Sync failed.').catch(() => null);
+      return void m.reply(result.ok ? `${OK} Commands synced!` : `${NO} Sync failed.`).catch(() => null);
     }
     // ds-exec_status — quick debug dump
     if (cmd === 'exec_status') {
@@ -545,7 +745,7 @@ client.on(Events.MessageCreate, async (m: Message) => {
   // chat_clear — anyone can clear their own session
   if (cmd === 'chat_clear') {
     clearChatSession(m.author.id);
-    return void m.reply('✅ Your AI chat history cleared.').catch(() => null);
+    return void m.reply(`${OK} Your AI chat history cleared.`).catch(() => null);
   }
 
   if (cmd === 'embed') {

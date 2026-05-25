@@ -6,7 +6,7 @@ import {
 } from 'discord.js';
 import {
   TOKEN, CLIENT_ID, GUILD_ID, BOT_START_TIME, MAX_TIMEOUT_MS,
-  OPENROUTER_API_KEY, SYSTEM_PROMPT, SYSTEM_AI_PROVIDER, SETTINGS_FILE, OWNER_ID,
+  OPENROUTER_API_KEY, SYSTEM_PROMPT, SYSTEM_AI_PROVIDER, SETTINGS_FILE, OWNER_ID, TICK_EMOJI, CROSS_EMOJI,
 } from './config';
 import {
   aliases, tags, prefixes, afks, giveaways, activeEmbedBuilders, activeChatSessions, controllers,
@@ -17,6 +17,8 @@ import {
 
 // ── Re-export setters so index.ts can reach them through utils if needed ──────
 export { setDefaultPrefixes, setGlobalAliases };
+const OK = TICK_EMOJI;
+const NO = CROSS_EMOJI;
 
 // =============================================================================
 // PURE UTILITIES
@@ -367,7 +369,7 @@ const CHAT_MAX_HISTORY = 20;              // keep last 20 turns per user
 
 /** Parse and execute JSON action from AI response */
 async function parseAndExecuteAction(action: any, ctx: Message | ChatInputCommandInteraction, isAuthorized: boolean): Promise<string | null> {
-  if (!isAuthorized) return '❌ You are not authorized to execute this action';
+  if (!isAuthorized) return `${NO} You are not authorized to execute this action`;
   
   const guild = ctx.guild;
   if (!guild) return null;
@@ -378,87 +380,87 @@ async function parseAndExecuteAction(action: any, ctx: Message | ChatInputComman
     switch (actionType) {
       case 'create_channel': {
         const { name, category } = action;
-        if (!name) return '❌ Missing channel name';
+        if (!name) return `${NO} Missing channel name`;
         try {
           const channel = await guild.channels.create({
             name,
             parent: category ? guild.channels.cache.find((c: any) => c.name === category || c.id === category)?.id : undefined,
           });
-          return `✅ Channel created: <#${channel.id}>`;
+          return `${OK} Channel created: <#${channel.id}>`;
         } catch (e) {
-          return `❌ Failed to create channel: ${(e as Error).message}`;
+          return `${NO} Failed to create channel: ${(e as Error).message}`;
         }
       }
       
       case 'delete_channel': {
         const { channelId } = action;
-        if (!channelId) return '❌ Missing channel ID';
+        if (!channelId) return `${NO} Missing channel ID`;
         try {
           const ch = guild.channels.cache.get(channelId);
-          if (!ch) return '❌ Channel not found';
+          if (!ch) return `${NO} Channel not found`;
           await ch.delete();
-          return `✅ Channel deleted`;
+          return `${OK} Channel deleted`;
         } catch (e) {
-          return `❌ Failed to delete channel: ${(e as Error).message}`;
+          return `${NO} Failed to delete channel: ${(e as Error).message}`;
         }
       }
       
       case 'add_role': {
         const { userId, roleName } = action;
-        if (!userId || !roleName) return '❌ Missing userId or roleName';
+        if (!userId || !roleName) return `${NO} Missing userId or roleName`;
         try {
           const member = await guild.members.fetch(userId);
           const role = guild.roles.cache.find((r: any) => r.name === roleName || r.id === roleName);
-          if (!role) return '❌ Role not found';
+          if (!role) return `${NO} Role not found`;
           await member.roles.add(role);
-          return `✅ Role ${roleName} added to user`;
+          return `${OK} Role ${roleName} added to user`;
         } catch (e) {
-          return `❌ Failed to add role: ${(e as Error).message}`;
+          return `${NO} Failed to add role: ${(e as Error).message}`;
         }
       }
       
       case 'remove_role': {
         const { userId, roleName } = action;
-        if (!userId || !roleName) return '❌ Missing userId or roleName';
+        if (!userId || !roleName) return `${NO} Missing userId or roleName`;
         try {
           const member = await guild.members.fetch(userId);
           const role = guild.roles.cache.find((r: any) => r.name === roleName || r.id === roleName);
-          if (!role) return '❌ Role not found';
+          if (!role) return `${NO} Role not found`;
           await member.roles.remove(role);
-          return `✅ Role ${roleName} removed from user`;
+          return `${OK} Role ${roleName} removed from user`;
         } catch (e) {
-          return `❌ Failed to remove role: ${(e as Error).message}`;
+          return `${NO} Failed to remove role: ${(e as Error).message}`;
         }
       }
       
       case 'ban_user': {
         const { userId, reason } = action;
-        if (!userId) return '❌ Missing userId';
+        if (!userId) return `${NO} Missing userId`;
         try {
           await guild.members.ban(userId, { reason });
-          return `✅ User banned`;
+          return `${OK} User banned`;
         } catch (e) {
-          return `❌ Failed to ban user: ${(e as Error).message}`;
+          return `${NO} Failed to ban user: ${(e as Error).message}`;
         }
       }
       
       case 'kick_user': {
         const { userId, reason } = action;
-        if (!userId) return '❌ Missing userId';
+        if (!userId) return `${NO} Missing userId`;
         try {
           const member = await guild.members.fetch(userId);
           await member.kick(reason);
-          return `✅ User kicked`;
+          return `${OK} User kicked`;
         } catch (e) {
-          return `❌ Failed to kick user: ${(e as Error).message}`;
+          return `${NO} Failed to kick user: ${(e as Error).message}`;
         }
       }
       
       case 'set_afk': {
         const { userId, reason } = action;
-        if (!userId) return '❌ Missing userId';
+        if (!userId) return `${NO} Missing userId`;
         // This would need to be imported from storage
-        return `✅ User marked as AFK: ${reason}`;
+        return `${OK} User marked as AFK: ${reason}`;
       }
       
       default:
@@ -466,7 +468,7 @@ async function parseAndExecuteAction(action: any, ctx: Message | ChatInputComman
     }
   } catch (err) {
     console.error('[ACTION]', err);
-    return `❌ Action error: ${(err as Error).message}`;
+    return `${NO} Action error: ${(err as Error).message}`;
   }
 }
 
@@ -480,7 +482,7 @@ export async function handleAIChat(ctx: Message | ChatInputCommandInteraction, u
     return;
   }
   if (!OPENROUTER_API_KEY) {
-    const msg = '❌ OpenRouter API key not configured in `.env` (`openrouter_api=sk-...`).';
+    const msg = `${NO} OpenRouter API key not configured in \`.env\` (\`openrouter_api=sk-...\`).`;
     if (ctx instanceof Message) {
       await ctx.reply(msg).catch(() => null);
     } else {
@@ -576,7 +578,7 @@ export async function handleAIChat(ctx: Message | ChatInputCommandInteraction, u
           }
         } else {
           // Non-authorized user trying to execute action
-          reply = reply.replace(/\{[^}]*"action"[^}]*\}/, '❌ You are not authorized to perform this action').trim();
+          reply = reply.replace(/\{[^}]*"action"[^}]*\}/, `${NO} You are not authorized to perform this action`).trim();
         }
       } catch {
         // Not valid JSON action, just show it as-is

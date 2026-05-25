@@ -16,6 +16,9 @@ export const OWNER_ID = '1336387088320565360';
 export const OPENROUTER_API_KEY = process.env.openrouter_api || process.env.opentrouter_api || '';
 export const SYSTEM_PROMPT      = process.env.system_prompt  || 'You are Dhaniya Sir, a helpful Discord bot.';
 export const SYSTEM_AI_PROVIDER = process.env.system_AI  || 'google/gemini-2.0-flash-001';
+export const TICK_EMOJI        = process.env.TICK_EMOJI || '<:gtick:1508092456967868507>';
+export const CROSS_EMOJI       = process.env.CROSS_EMOJI || '<:cross:1508092408913461420>';
+export const PRESENCE_ROTATION_MS = Number(process.env.PRESENCE_ROTATION_MS || 30000);
 
 if (!TOKEN) throw new Error('Missing TOKEN in .env');
 
