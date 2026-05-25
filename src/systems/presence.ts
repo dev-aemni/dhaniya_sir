@@ -7,6 +7,14 @@ const statuses: { name: string; type: ActivityType }[] = [
   { name: 'custom embeds', type: ActivityType.Listening },
   { name: 'premium server tools', type: ActivityType.Streaming },
   { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf!', type: ActivityType.Streaming },
+  { name: 'Doing Sex with Dhaniya\'s gf -KUSO!', type: ActivityType.Streaming },
 ];
 
 function applyPresence(client: Client, index: number): void {
