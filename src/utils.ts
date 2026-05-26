@@ -11,6 +11,7 @@ import {
 import {
   aliases, tags, prefixes, afks, giveaways, activeEmbedBuilders, activeChatSessions, controllers,
   DEFAULT_PREFIXES, GLOBAL_ALIASES, GiveawayEntry,
+  EmbedBuilderPurpose,
   setDefaultPrefixes, setGlobalAliases,
   saveStore, savePrefixStore, ensureGuildBucket,
 } from './storage';
@@ -223,7 +224,11 @@ export function getEmbedUIRows(builder: { buttons: ButtonBuilder[] }) {
   return rows;
 }
 
-export async function startEmbedBuilder(ctx: Message | ChatInputCommandInteraction, editMsgId?: string) {
+export async function startEmbedBuilder(
+  ctx: Message | ChatInputCommandInteraction,
+  editMsgId?: string,
+  purpose?: EmbedBuilderPurpose,
+) {
   const authorId = 'user' in ctx ? ctx.user.id : ctx.author.id;
   let targetMessage: Message | undefined;
 
@@ -250,8 +255,10 @@ export async function startEmbedBuilder(ctx: Message | ChatInputCommandInteracti
     });
   }
 
-  const content = '**Interactive Embed Builder**\nUse the buttons below to configure your embed:';
-  const builderState = { embed, buttons: existingButtons, botMsg: null as any, awaiting: null as string | null, editTarget: targetMessage };
+  const content = purpose
+    ? '**Interactive Embed Builder**\nBuild the embed, then press **Save** to apply it to this setup.'
+    : '**Interactive Embed Builder**\nUse the buttons below to configure your embed:';
+  const builderState = { embed, buttons: existingButtons, botMsg: null as any, awaiting: null as string | null, editTarget: targetMessage, purpose };
 
   let botMsg: Message;
   if (ctx instanceof ChatInputCommandInteraction) {

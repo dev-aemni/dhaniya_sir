@@ -2,6 +2,7 @@ import 'dotenv/config';
 import fs from 'node:fs';
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  ChannelType,
   ChatInputCommandInteraction, Client, EmbedBuilder,
   Events, GatewayIntentBits, GuildMember,
   Message, MessageFlags, ModalBuilder,
@@ -47,8 +48,10 @@ const client = new Client({
   ],
 });
 
-type WelcomeCfg = { enabled: boolean; channelId: string; message: string };
-type TicketCfg = { panelChannelId: string; categoryId: string; panelMessageId?: string };
+type StoredButton = { label: string; url: string };
+type StoredEmbed = Record<string, any>;
+type WelcomeCfg = { enabled: boolean; channelId: string; message: string; embed?: StoredEmbed; buttons?: StoredButton[] };
+type TicketCfg = { panelChannelId: string; categoryId: string; panelMessageId?: string; panelEmbed?: StoredEmbed; panelButtons?: StoredButton[] };
 type AutomodCfg = { anti_link: boolean; anti_invite: boolean; anti_spam: boolean };
 type TicketEntry = { channelId: string; ownerId: string; claimedBy?: string; createdAt: number; closed: boolean };
 type GuildSystems = { welcome?: WelcomeCfg; ticket?: TicketCfg; automod?: AutomodCfg; tickets?: Record<string, TicketEntry> };
@@ -74,6 +77,48 @@ function renderWelcome(tpl: string, m: GuildMember): string {
     .replace(/\{membercount\}/gi, String(m.guild.memberCount))
     .replace(/\{created\}/gi, m.user.createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }));
 }
+function renderTemplateString(text: string, member: GuildMember): string {
+  return renderWelcome(text, member)
+    .replace(/\{user\.username\}/gi, member.user.username)
+    .replace(/\{user\.tag\}/gi, member.user.tag)
+    .replace(/\{user\.id\}/gi, member.id)
+    .replace(/\{user\.mention\}/gi, `<@${member.id}>`)
+    .replace(/\{server\.memberCount\}/gi, String(member.guild.memberCount));
+}
+function renderTemplateValue(value: any, member: GuildMember): any {
+  if (typeof value === 'string') return renderTemplateString(value, member);
+  if (Array.isArray(value)) return value.map(v => renderTemplateValue(v, member));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, renderTemplateValue(v, member)]));
+  }
+  return value;
+}
+function serializeLinkButtons(buttons: ButtonBuilder[]): StoredButton[] {
+  return buttons
+    .map(button => button.toJSON() as any)
+    .filter(button => button.style === ButtonStyle.Link && button.url)
+    .map(button => ({ label: String(button.label || 'Link').slice(0, 80), url: String(button.url) }))
+    .slice(0, 20);
+}
+function buildLinkButton(button: StoredButton): ButtonBuilder {
+  return new ButtonBuilder().setLabel(button.label || 'Link').setURL(button.url).setStyle(ButtonStyle.Link);
+}
+function buildButtonRows(buttons: ButtonBuilder[]): ActionRowBuilder<ButtonBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let i = 0; i < Math.min(buttons.length, 25); i += 5) {
+    rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5)));
+  }
+  return rows;
+}
+function makeTicketPanelRows(storedButtons: StoredButton[] = []): ActionRowBuilder<ButtonBuilder>[] {
+  const createButton = new ButtonBuilder().setCustomId('ticket_open').setLabel('Create Ticket').setStyle(ButtonStyle.Primary);
+  return buildButtonRows([createButton, ...storedButtons.map(buildLinkButton)]);
+}
+function makeTicketDeleteRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('ticket_delete').setLabel('Delete Channel').setStyle(ButtonStyle.Danger),
+  );
+}
 function statusEmbed(kind: 'ok' | 'no' | 'info', title: string, description: string) {
   const color = kind === 'ok' ? 0x57f287 : kind === 'no' ? 0xed4245 : 0x5865f2;
   const icon = kind === 'ok' ? OK : kind === 'no' ? NO : 'ℹ️';
@@ -93,6 +138,10 @@ function makeWelcomeEmbed(member: GuildMember, tpl: string) {
     )
     .setFooter({ text: `User ID: ${member.id}` })
     .setTimestamp();
+}
+function makeConfiguredWelcomeEmbed(member: GuildMember, cfg: WelcomeCfg) {
+  if (cfg.embed) return new EmbedBuilder(renderTemplateValue(cfg.embed, member));
+  return makeWelcomeEmbed(member, cfg.message);
 }
 
 // WS diagnostics — visible in Render's log dashboard
@@ -283,10 +332,14 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     const gs = guildSystems(interaction.guildId);
     if (sub === 'setup') {
       const channel = interaction.options.getChannel('channel', true);
-      const message = interaction.options.getString('message', true);
-      gs.welcome = { enabled: true, channelId: channel.id, message };
-      saveSystems(systems);
-      return void interaction.reply({ embeds: [statusEmbed('ok', 'Welcome Configured', `Channel: <#${channel.id}>\nMessage saved successfully.`)], flags: MessageFlags.Ephemeral });
+      const message = interaction.options.getString('message') || 'Welcome {user} to {server}, You are the {membercount}th member!';
+      await startEmbedBuilder(interaction, undefined, {
+        kind: 'welcome_setup',
+        guildId: interaction.guildId,
+        channelId: channel.id,
+        message,
+      });
+      return;
     }
     if (!gs.welcome) return void interaction.reply({ embeds: [statusEmbed('no', 'Welcome Not Configured', 'Run `/welcome setup` first.')], flags: MessageFlags.Ephemeral });
     if (sub === 'toggle') {
@@ -297,11 +350,18 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     }
     const member = interaction.member instanceof GuildMember ? interaction.member : null;
     if (!member) return void interaction.reply({ embeds: [statusEmbed('no', 'Invalid Context', 'Use this command in a server.')], flags: MessageFlags.Ephemeral });
-    if (sub === 'preview') return void interaction.reply({ embeds: [makeWelcomeEmbed(member, gs.welcome.message)], flags: MessageFlags.Ephemeral });
+    if (sub === 'preview') return void interaction.reply({
+      embeds: [makeConfiguredWelcomeEmbed(member, gs.welcome)],
+      components: buildButtonRows((gs.welcome.buttons || []).map(buildLinkButton)) as any,
+      flags: MessageFlags.Ephemeral,
+    });
     if (sub === 'test') {
       const ch = await interaction.guild.channels.fetch(gs.welcome.channelId).catch(() => null) as any;
       if (!ch) return void interaction.reply({ embeds: [statusEmbed('no', 'Welcome Channel Missing', 'Configured welcome channel was not found.')], flags: MessageFlags.Ephemeral });
-      await sendToChannel(ch, { embeds: [makeWelcomeEmbed(member, gs.welcome.message)] });
+      await sendToChannel(ch, {
+        embeds: [makeConfiguredWelcomeEmbed(member, gs.welcome)],
+        components: buildButtonRows((gs.welcome.buttons || []).map(buildLinkButton)),
+      });
       return void interaction.reply({ embeds: [statusEmbed('ok', 'Test Sent', `Test welcome sent in <#${gs.welcome.channelId}>.`)], flags: MessageFlags.Ephemeral });
     }
   }
@@ -341,13 +401,13 @@ async function handleSlash(interaction: ChatInputCommandInteraction): Promise<vo
     if (sub === 'setup') {
       const panelChannel = interaction.options.getChannel('channel', true);
       const category = interaction.options.getChannel('category', true);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('ticket_open').setLabel('Open Ticket').setStyle(ButtonStyle.Primary),
-      );
-      const sent = await sendToChannel(panelChannel, { content: 'Need help? Click to open a ticket.', components: [row] });
-      gs.ticket = { panelChannelId: panelChannel.id, categoryId: category.id, panelMessageId: sent?.id };
-      saveSystems(systems);
-      return void interaction.reply({ embeds: [statusEmbed('ok', 'Ticket Panel Created', `Panel posted in <#${panelChannel.id}>.`)], flags: MessageFlags.Ephemeral });
+      await startEmbedBuilder(interaction, undefined, {
+        kind: 'ticket_setup',
+        guildId: interaction.guildId,
+        panelChannelId: panelChannel.id,
+        categoryId: category.id,
+      });
+      return;
     }
     const ticket = Object.values(gs.tickets).find(t => t.channelId === interaction.channelId && !t.closed);
     if (!ticket) return void interaction.reply({ embeds: [statusEmbed('no', 'Not a Ticket Channel', 'This channel is not an active ticket.')], flags: MessageFlags.Ephemeral });
@@ -446,7 +506,10 @@ client.on(Events.GuildMemberAdd, async (member) => {
   if (!w?.enabled) return;
   const ch = await member.guild.channels.fetch(w.channelId).catch(() => null) as any;
   if (!ch) return;
-  await sendToChannel(ch, { embeds: [makeWelcomeEmbed(member, w.message)] });
+  await sendToChannel(ch, {
+    embeds: [makeConfiguredWelcomeEmbed(member, w)],
+    components: buildButtonRows((w.buttons || []).map(buildLinkButton)),
+  });
 });
 
 // =============================================================================
@@ -463,7 +526,12 @@ client.on(Events.InteractionCreate, async i => {
       if (existing) return void i.reply({ embeds: [statusEmbed('no', 'Ticket Already Open', `You already have one: <#${existing.channelId}>`)], flags: MessageFlags.Ephemeral });
       const created = await i.guild.channels.create({
         name: `ticket-${i.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 28),
+        type: ChannelType.GuildText,
         parent: gs.ticket.categoryId,
+        permissionOverwrites: [
+          { id: i.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          ...(client.user ? [{ id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] }] : []),
+        ],
       });
       gs.tickets[created.id] = { channelId: created.id, ownerId: i.user.id, createdAt: Date.now(), closed: false };
       saveSystems(systems);
@@ -479,8 +547,24 @@ client.on(Events.InteractionCreate, async i => {
             )
             .setTimestamp(),
         ],
+        components: [makeTicketDeleteRow()],
       });
       return void i.reply({ embeds: [statusEmbed('ok', 'Ticket Created', `Your ticket: <#${created.id}>`)], flags: MessageFlags.Ephemeral });
+    }
+
+    if (i.isButton() && i.customId === 'ticket_delete' && i.guildId && i.guild) {
+      const gs = guildSystems(i.guildId);
+      const ticket = Object.values(gs.tickets || {}).find(t => t.channelId === i.channelId && !t.closed);
+      if (!ticket) return void i.reply({ embeds: [statusEmbed('no', 'Not a Ticket Channel', 'This button only works inside an active ticket.')], flags: MessageFlags.Ephemeral });
+      const member = i.member instanceof GuildMember ? i.member : null;
+      const canDelete = ticket.ownerId === i.user.id || member?.permissions.has(PermissionFlagsBits.ManageChannels);
+      if (!canDelete) return void i.reply({ embeds: [statusEmbed('no', 'No Permission', 'Only the ticket creator or staff can delete this ticket channel.')], flags: MessageFlags.Ephemeral });
+      ticket.closed = true;
+      saveSystems(systems);
+      await i.reply({ embeds: [statusEmbed('info', 'Deleting Ticket', `Ticket made by <@${ticket.ownerId}>.\nDeleted by <@${i.user.id}>.`)] });
+      const ch = i.channel as any;
+      setTimeout(() => ch?.delete?.(`Ticket deleted by ${i.user.tag}`).catch(() => null), 1500);
+      return;
     }
 
     // ── Embed Builder Buttons ──────────────────────────────────────────────
@@ -491,7 +575,46 @@ client.on(Events.InteractionCreate, async i => {
 
       const action = i.customId.replace('emb_', '');
       if (action === 'save') {
-        const finalComponents = builder.buttons.length > 0 ? [new ActionRowBuilder<ButtonBuilder>().addComponents(builder.buttons)] : [];
+        const storedButtons = serializeLinkButtons(builder.buttons);
+        const finalComponents = buildButtonRows(storedButtons.map(buildLinkButton));
+        if (builder.purpose?.kind === 'ticket_setup') {
+          const panelChannel = await client.channels.fetch(builder.purpose.panelChannelId).catch(() => null);
+          if (!panelChannel) return void i.reply({ content: 'Ticket panel channel not found.', flags: MessageFlags.Ephemeral });
+          const sent = await sendToChannel(panelChannel, {
+            embeds: [builder.embed],
+            components: makeTicketPanelRows(storedButtons),
+          });
+          if (!sent) return void i.reply({ content: 'Failed to send ticket panel. Check channel permissions.', flags: MessageFlags.Ephemeral });
+          const gs = guildSystems(builder.purpose.guildId);
+          gs.tickets = gs.tickets || {};
+          gs.ticket = {
+            panelChannelId: builder.purpose.panelChannelId,
+            categoryId: builder.purpose.categoryId,
+            panelMessageId: sent.id,
+            panelEmbed: builder.embed.toJSON() as StoredEmbed,
+            panelButtons: storedButtons,
+          };
+          saveSystems(systems);
+          await i.reply({ content: `Ticket panel created in <#${builder.purpose.panelChannelId}>.`, flags: MessageFlags.Ephemeral });
+          await builder.botMsg.delete().catch(() => null);
+          activeEmbedBuilders.delete(i.user.id);
+          return;
+        }
+        if (builder.purpose?.kind === 'welcome_setup') {
+          const gs = guildSystems(builder.purpose.guildId);
+          gs.welcome = {
+            enabled: true,
+            channelId: builder.purpose.channelId,
+            message: builder.purpose.message,
+            embed: builder.embed.toJSON() as StoredEmbed,
+            buttons: storedButtons,
+          };
+          saveSystems(systems);
+          await i.reply({ content: `Welcome embed saved for <#${builder.purpose.channelId}>.`, flags: MessageFlags.Ephemeral });
+          await builder.botMsg.delete().catch(() => null);
+          activeEmbedBuilders.delete(i.user.id);
+          return;
+        }
         if (builder.editTarget) {
           await builder.editTarget.edit({ embeds: [builder.embed], components: finalComponents as any }).catch(() => null);
           await i.reply({ content: 'Embed edited successfully!', flags: MessageFlags.Ephemeral });

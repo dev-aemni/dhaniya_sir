@@ -107,9 +107,13 @@ export const prefixes             = loadPrefixStore(SETTINGS_FILE);
 export const afks                 = loadAfkStore(AFK_FILE);
 export const controllers          = new Map<string, string[]>(); // guildId -> roleIds[]
 export const giveaways            = new Map<string, GiveawayEntry>();
+export type EmbedBuilderPurpose =
+  | { kind: 'ticket_setup'; guildId: string; panelChannelId: string; categoryId: string }
+  | { kind: 'welcome_setup'; guildId: string; channelId: string; message: string };
+
 export const activeEmbedBuilders  = new Map<string, {
   embed: EmbedBuilder; buttons: ButtonBuilder[]; botMsg: Message;
-  awaiting: string | null; editTarget?: Message;
+  awaiting: string | null; editTarget?: Message; purpose?: EmbedBuilderPurpose;
 }>();
 /** Per-user AI chat sessions: userId -> conversation history + timestamp */
 export const activeChatSessions   = new Map<string, ActiveChat>();
