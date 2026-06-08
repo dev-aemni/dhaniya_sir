@@ -159,7 +159,22 @@ client.on('shardResume',     (id, r)  => console.log(`[WS] Shard ${id} resumed (
 async function handleSlash(interaction: ChatInputCommandInteraction): Promise<void> {
   const name = interaction.commandName;
 
-  if (name === 'ping')    return void interaction.reply({ content: `Ping Pong Is **${client.ws.ping}ms~**`, flags: MessageFlags.Ephemeral });
+  if (name === 'ping') {
+  const sent = await interaction.reply({
+    content: 'Pinging...',
+    fetchReply: true
+  });
+
+  const roundtrip =
+    sent.createdTimestamp - interaction.createdTimestamp;
+
+  return void interaction.editReply({
+    content:
+      `🏓 Pong!\n` +
+      `WebSocket: **${client.ws.ping}ms**\n` +
+      `API Roundtrip: **${roundtrip}ms**`
+  });
+}
   if (name === 'uptime')  return void interaction.reply(`Uptime: **${getUptimeText()}**`);
   if (name === 'help')    return void interaction.reply({ content: buildHelpText(getPrimaryPrefix(interaction.guildId)), flags: MessageFlags.Ephemeral });
   if (name === 'botinfo') return void interaction.reply([`Bot: **${client.user?.tag || 'Unknown'}**`, `ID: \`${client.user?.id || 'N/A'}\``, `Servers: **${client.guilds.cache.size}**`, `Uptime: **${getUptimeText()}**`].join('\n'));
@@ -849,7 +864,19 @@ client.on(Events.MessageCreate, async (m: Message) => {
   // ==========================================================================
   // REGULAR PREFIX COMMANDS
   // ==========================================================================
-  if (cmd === 'ping')    return void m.reply(`Ping Pong Is **${client.ws.ping}ms~**`).catch(() => null);
+  if (cmd === 'ping') {
+  const sent = await m.reply('Pinging...').catch(() => null);
+  if (!sent) return;
+
+  const roundtrip =
+    sent.createdTimestamp - m.createdTimestamp;
+
+  return void sent.edit(
+    `🏓 Pong!\n` +
+    `WebSocket: **${client.ws.ping}ms**\n` +
+    `API Roundtrip: **${roundtrip}ms**`
+  ).catch(() => null);
+}
   if (cmd === 'uptime')  return void m.reply(`Uptime: **${getUptimeText()}**`).catch(() => null);
   if (cmd === 'botinfo') return void m.reply([`Bot: **${client.user?.tag}**`, `Servers: **${client.guilds.cache.size}**`, `Uptime: **${getUptimeText()}**`].join('\n')).catch(() => null);
   if (cmd === 'help')    return void m.reply(buildHelpText(getPrimaryPrefix(m.guildId))).catch(() => null);
