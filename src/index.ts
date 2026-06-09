@@ -952,11 +952,6 @@ client.on(Events.MessageCreate, async (m: Message) => {
   }
 });
 
-// =============================================================================
-// BOOT
-// =============================================================================
-// Force stdout/stderr to flush immediately — critical on Render where buffered
-// output can disappear if the process exits or hangs before the buffer drains.
 const rawLog = (msg: string) => process.stdout.write(msg + '\n');
 const rawErr = (msg: string) => process.stderr.write(msg + '\n');
 
