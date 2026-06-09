@@ -14,3 +14,4 @@ todo
 git.bat
 *.ps1
 ignore/
+*.bat
