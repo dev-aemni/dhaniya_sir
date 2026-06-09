@@ -12,10 +12,9 @@ export const MAX_TIMEOUT_MS  = 28 * 24 * 60 * 60 * 1000;
 /** The one user who can run owner-only secret commands */
 export const OWNER_ID = '1336387088320565360';
 
-// ── AI / OpenRouter ───────────────────────────────────────────────────────────
 export const OPENROUTER_API_KEY = process.env.openrouter_api || process.env.opentrouter_api || '';
-export const SYSTEM_PROMPT      = process.env.system_prompt  || 'You are Dhaniya Sir, a helpful Discord bot.';
-export const SYSTEM_AI_PROVIDER = process.env.system_AI  || 'openai/gpt-oss-20b:free';
+export const SYSTEM_PROMPT      = process.env.system_prompt  || process.env.system_prompt ;
+export const SYSTEM_AI_PROVIDER = process.env.system_AI  || process.env.system_AI ;
 export const TICK_EMOJI        = process.env.TICK_EMOJI || '<:gtick:1508092456967868507>';
 export const CROSS_EMOJI       = process.env.CROSS_EMOJI || '<:cross:1508092408913461420>';
 export const PRESENCE_ROTATION_MS = Number(process.env.PRESENCE_ROTATION_MS || 30000);
