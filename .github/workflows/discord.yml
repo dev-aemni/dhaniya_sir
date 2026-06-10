@@ -3,91 +3,112 @@ name: GitHub Discord Logger
 on:
   push:
   pull_request:
-    types: [opened, closed, reopened]
-  issues:
-    types: [opened, closed, reopened]
+    types:
+      - opened
+      - reopened
+      - closed
   release:
-    types: [published]
-  deployment:
-  deployment_status:
+    types:
+      - published
 
 jobs:
-  discord-log:
+  discord:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send Discord Embed
+      - name: Push Embed
+        if: github.event_name == 'push'
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          EVENT="${{ github.event_name }}"
-          REPO="${{ github.repository }}"
-          ACTOR="${{ github.actor }}"
-          URL="${{ github.server_url }}/${{ github.repository }}"
-          SHA="${{ github.sha }}"
-
-          TITLE="GitHub Activity"
-          DESC="New activity detected"
-
-          if [ "$EVENT" = "push" ]; then
-            TITLE="🚀 New Push"
-            DESC="${{ github.event.head_commit.message }}"
-          fi
-
-          if [ "$EVENT" = "pull_request" ]; then
-            TITLE="🔀 Pull Request"
-            DESC="${{ github.event.pull_request.title }}"
-          fi
-
-          if [ "$EVENT" = "issues" ]; then
-            TITLE="📌 Issue Activity"
-            DESC="${{ github.event.issue.title }}"
-          fi
-
-          if [ "$EVENT" = "release" ]; then
-            TITLE="🏷️ New Release"
-            DESC="${{ github.event.release.name }}"
-          fi
-
-          PAYLOAD=$(cat <<EOF
-          {
-            "username":"GitHub Bot Log",
-            "avatar_url":"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
-            "embeds":[
+          curl -H "Content-Type: application/json" \
+          -d "{
+            \"username\":\"GitHub Push\",
+            \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
+            \"embeds\":[
               {
-                "title":"$TITLE",
-                "description":"$DESC",
-                "color":5814783,
-                "fields":[
+                \"title\":\"🚀 New Push\",
+                \"description\":\"${{ github.event.head_commit.message }}\",
+                \"color\":65280,
+                \"fields\":[
                   {
-                    "name":"Repository",
-                    "value":"$REPO",
-                    "inline":true
+                    \"name\":\"Repository\",
+                    \"value\":\"${{ github.repository }}\",
+                    \"inline\":true
                   },
                   {
-                    "name":"Actor",
-                    "value":"$ACTOR",
-                    "inline":true
+                    \"name\":\"Branch\",
+                    \"value\":\"${{ github.ref_name }}\",
+                    \"inline\":true
                   },
                   {
-                    "name":"Event",
-                    "value":"$EVENT",
-                    "inline":true
+                    \"name\":\"Author\",
+                    \"value\":\"${{ github.actor }}\",
+                    \"inline\":true
                   }
                 ],
-                "footer":{
-                  "text":"Dhaniya Sir GitHub Logger"
-                },
-                "timestamp":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-                "url":"$URL"
+                \"url\":\"${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}\",
+                \"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
               }
             ]
-          }
-          EOF
-          )
+          }" \
+          "$WEBHOOK"
 
-          curl \
-            -H "Content-Type: application/json" \
-            -X POST \
-            -d "$PAYLOAD" \
-            "$DISCORD_WEBHOOK"
+      - name: Pull Request Embed
+        if: github.event_name == 'pull_request'
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          curl -H "Content-Type: application/json" \
+          -d "{
+            \"username\":\"GitHub PR\",
+            \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
+            \"embeds\":[
+              {
+                \"title\":\"🔀 Pull Request ${{ github.event.action }}\",
+                \"description\":\"${{ github.event.pull_request.title }}\",
+                \"color\":3447003,
+                \"url\":\"${{ github.event.pull_request.html_url }}\",
+                \"fields\":[
+                  {
+                    \"name\":\"Author\",
+                    \"value\":\"${{ github.actor }}\",
+                    \"inline\":true
+                  },
+                  {
+                    \"name\":\"Repository\",
+                    \"value\":\"${{ github.repository }}\",
+                    \"inline\":true
+                  }
+                ]
+              }
+            ]
+          }" \
+          "$WEBHOOK"
+
+      - name: Release Embed
+        if: github.event_name == 'release'
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          curl -H "Content-Type: application/json" \
+          -d "{
+            \"username\":\"GitHub Release\",
+            \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
+            \"embeds\":[
+              {
+                \"title\":\"🏷️ New Release\",
+                \"description\":\"${{ github.event.release.name }}\",
+                \"color\":16753920,
+                \"url\":\"${{ github.event.release.html_url }}\",
+                \"fields\":[
+                  {
+                    \"name\":\"Tag\",
+                    \"value\":\"${{ github.event.release.tag_name }}\",
+                    \"inline\":true
+                  }
+                ]
+              }
+            ]
+          }" \
+          "$WEBHOOK"
