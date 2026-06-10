@@ -40,7 +40,7 @@ jobs:
             \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
             \"embeds\":[
               {
-                \"title\":\"<:pfp:1492830381865435176> New Push\",
+                \"title\":\"🚀 New Push\",
                 \"description\":\"${{ github.event.head_commit.message }}\",
                 \"url\":\"$COMMIT_URL\",
                 \"color\":7995392,
@@ -57,7 +57,7 @@ jobs:
 
                 \"fields\":[
                   {
-                    \"name\":\"📦 Repository <:pfp:1492830381865435176>\",
+                    \"name\":\"📦 Repository\",
                     \"value\":\"$REPO\",
                     \"inline\":true
                   },
