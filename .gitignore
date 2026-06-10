@@ -15,3 +15,5 @@ git.bat
 *.ps1
 ignore/
 *.bat
+dhaniyasir/
+*todo*
