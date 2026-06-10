@@ -1,3 +1,4 @@
+```yaml
 name: GitHub Discord Logger
 
 on:
@@ -16,63 +17,178 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Push Embed
+
+      # =========================
+      # PUSH
+      # =========================
+
+      - name: Push Notification
         if: github.event_name == 'push'
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          curl -H "Content-Type: application/json" \
+          AUTHOR="${{ github.actor }}"
+          REPO="${{ github.repository }}"
+          BRANCH="${{ github.ref_name }}"
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          curl \
+          -H "Content-Type: application/json" \
+          -X POST \
           -d "{
-            \"username\":\"GitHub Push\",
+            \"username\":\"Dhaniya Git\",
             \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
             \"embeds\":[
               {
                 \"title\":\"🚀 New Push\",
                 \"description\":\"${{ github.event.head_commit.message }}\",
-                \"color\":65280,
+                \"url\":\"$COMMIT_URL\",
+                \"color\":7995392,
+
+                \"author\":{
+                  \"name\":\"$AUTHOR\",
+                  \"icon_url\":\"https://github.com/$AUTHOR.png\",
+                  \"url\":\"https://github.com/$AUTHOR\"
+                },
+
+                \"thumbnail\":{
+                  \"url\":\"https://dev-aemni.github.io/dhaniya_sir/pfp.gif\"
+                },
+
                 \"fields\":[
                   {
-                    \"name\":\"Repository\",
-                    \"value\":\"${{ github.repository }}\",
+                    \"name\":\"📦 Repository\",
+                    \"value\":\"$REPO\",
                     \"inline\":true
                   },
                   {
-                    \"name\":\"Branch\",
-                    \"value\":\"${{ github.ref_name }}\",
+                    \"name\":\"🌿 Branch\",
+                    \"value\":\"$BRANCH\",
                     \"inline\":true
                   },
                   {
-                    \"name\":\"Author\",
-                    \"value\":\"${{ github.actor }}\",
+                    \"name\":\"🔖 Commit\",
+                    \"value\":\"\`$SHA_SHORT\`\",
+                    \"inline\":true
+                  },
+                  {
+                    \"name\":\"👤 Author\",
+                    \"value\":\"$AUTHOR\",
                     \"inline\":true
                   }
                 ],
-                \"url\":\"${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}\",
+
+                \"footer\":{
+                  \"text\":\"Dhaniya Sir • GitHub Logger\"
+                },
+
                 \"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
               }
             ]
           }" \
           "$WEBHOOK"
 
-      - name: Pull Request Embed
+      # =========================
+      # PULL REQUESTS
+      # =========================
+
+      - name: Pull Request Notification
         if: github.event_name == 'pull_request'
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          curl -H "Content-Type: application/json" \
+          AUTHOR="${{ github.actor }}"
+
+          curl \
+          -H "Content-Type: application/json" \
+          -X POST \
           -d "{
-            \"username\":\"GitHub PR\",
+            \"username\":\"Dhaniya Git\",
             \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
             \"embeds\":[
               {
                 \"title\":\"🔀 Pull Request ${{ github.event.action }}\",
                 \"description\":\"${{ github.event.pull_request.title }}\",
-                \"color\":3447003,
                 \"url\":\"${{ github.event.pull_request.html_url }}\",
+                \"color\":3447003,
+
+                \"author\":{
+                  \"name\":\"$AUTHOR\",
+                  \"icon_url\":\"https://github.com/$AUTHOR.png\",
+                  \"url\":\"https://github.com/$AUTHOR\"
+                },
+
+                \"thumbnail\":{
+                  \"url\":\"https://dev-aemni.github.io/dhaniya_sir/pfp.gif\"
+                },
+
                 \"fields\":[
                   {
+                    \"name\":\"Repository\",
+                    \"value\":\"${{ github.repository }}\",
+                    \"inline\":true
+                  },
+                  {
                     \"name\":\"Author\",
-                    \"value\":\"${{ github.actor }}\",
+                    \"value\":\"$AUTHOR\",
+                    \"inline\":true
+                  },
+                  {
+                    \"name\":\"State\",
+                    \"value\":\"${{ github.event.action }}\",
+                    \"inline\":true
+                  }
+                ],
+
+                \"footer\":{
+                  \"text\":\"Dhaniya Sir • Pull Request\"
+                },
+
+                \"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }
+            ]
+          }" \
+          "$WEBHOOK"
+
+      # =========================
+      # RELEASES
+      # =========================
+
+      - name: Release Notification
+        if: github.event_name == 'release'
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          AUTHOR="${{ github.actor }}"
+
+          curl \
+          -H "Content-Type: application/json" \
+          -X POST \
+          -d "{
+            \"username\":\"Dhaniya Git\",
+            \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
+            \"embeds\":[
+              {
+                \"title\":\"🏷️ New Release\",
+                \"description\":\"${{ github.event.release.name }}\",
+                \"url\":\"${{ github.event.release.html_url }}\",
+                \"color\":16753920,
+
+                \"author\":{
+                  \"name\":\"$AUTHOR\",
+                  \"icon_url\":\"https://github.com/$AUTHOR.png\",
+                  \"url\":\"https://github.com/$AUTHOR\"
+                },
+
+                \"thumbnail\":{
+                  \"url\":\"https://dev-aemni.github.io/dhaniya_sir/pfp.gif\"
+                },
+
+                \"fields\":[
+                  {
+                    \"name\":\"Tag\",
+                    \"value\":\"${{ github.event.release.tag_name }}\",
                     \"inline\":true
                   },
                   {
@@ -80,35 +196,15 @@ jobs:
                     \"value\":\"${{ github.repository }}\",
                     \"inline\":true
                   }
-                ]
-              }
-            ]
-          }" \
-          "$WEBHOOK"
+                ],
 
-      - name: Release Embed
-        if: github.event_name == 'release'
-        env:
-          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          curl -H "Content-Type: application/json" \
-          -d "{
-            \"username\":\"GitHub Release\",
-            \"avatar_url\":\"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\",
-            \"embeds\":[
-              {
-                \"title\":\"🏷️ New Release\",
-                \"description\":\"${{ github.event.release.name }}\",
-                \"color\":16753920,
-                \"url\":\"${{ github.event.release.html_url }}\",
-                \"fields\":[
-                  {
-                    \"name\":\"Tag\",
-                    \"value\":\"${{ github.event.release.tag_name }}\",
-                    \"inline\":true
-                  }
-                ]
+                \"footer\":{
+                  \"text\":\"Dhaniya Sir • Release Tracker\"
+                },
+
+                \"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
               }
             ]
           }" \
           "$WEBHOOK"
+```
