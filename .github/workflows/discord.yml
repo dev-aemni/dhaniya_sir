@@ -1,15 +1,93 @@
-name: Discord Notify
+name: GitHub Discord Logger
 
 on:
   push:
+  pull_request:
+    types: [opened, closed, reopened]
+  issues:
+    types: [opened, closed, reopened]
+  release:
+    types: [published]
+  deployment:
+  deployment_status:
 
 jobs:
-  notify:
+  discord-log:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send Discord Message
+      - name: Send Discord Embed
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          curl -H "Content-Type: application/json" \
-          -d '{"content":"🚀 New push to dhaniya_sir"}' \
-          ${{ secrets.DISCORD_WEBHOOK }}
+          EVENT="${{ github.event_name }}"
+          REPO="${{ github.repository }}"
+          ACTOR="${{ github.actor }}"
+          URL="${{ github.server_url }}/${{ github.repository }}"
+          SHA="${{ github.sha }}"
+
+          TITLE="GitHub Activity"
+          DESC="New activity detected"
+
+          if [ "$EVENT" = "push" ]; then
+            TITLE="🚀 New Push"
+            DESC="${{ github.event.head_commit.message }}"
+          fi
+
+          if [ "$EVENT" = "pull_request" ]; then
+            TITLE="🔀 Pull Request"
+            DESC="${{ github.event.pull_request.title }}"
+          fi
+
+          if [ "$EVENT" = "issues" ]; then
+            TITLE="📌 Issue Activity"
+            DESC="${{ github.event.issue.title }}"
+          fi
+
+          if [ "$EVENT" = "release" ]; then
+            TITLE="🏷️ New Release"
+            DESC="${{ github.event.release.name }}"
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "username":"GitHub Bot Log",
+            "avatar_url":"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+            "embeds":[
+              {
+                "title":"$TITLE",
+                "description":"$DESC",
+                "color":5814783,
+                "fields":[
+                  {
+                    "name":"Repository",
+                    "value":"$REPO",
+                    "inline":true
+                  },
+                  {
+                    "name":"Actor",
+                    "value":"$ACTOR",
+                    "inline":true
+                  },
+                  {
+                    "name":"Event",
+                    "value":"$EVENT",
+                    "inline":true
+                  }
+                ],
+                "footer":{
+                  "text":"Dhaniya Sir GitHub Logger"
+                },
+                "timestamp":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+                "url":"$URL"
+              }
+            ]
+          }
+          EOF
+          )
+
+          curl \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d "$PAYLOAD" \
+            "$DISCORD_WEBHOOK"
