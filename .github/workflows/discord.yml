@@ -57,7 +57,7 @@ jobs:
 
                 \"fields\":[
                   {
-                    \"name\":\"📦 Repository\",
+                    \"name\":\"📦 Repository <:pfp:1492830381865435176>\",
                     \"value\":\"$REPO\",
                     \"inline\":true
                   },
